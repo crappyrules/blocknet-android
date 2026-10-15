@@ -1,0 +1,112 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: ARM64 APK (${{ matrix.core }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        core: [supplied, activity]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle and validate wrapper
+        uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Install Android SDK packages
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Set up Go for activity Core
+        if: matrix.core == 'activity'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.5'
+          cache: false
+
+      - name: Build activity Core from pinned source
+        if: matrix.core == 'activity'
+        run: |
+          sdkmanager 'ndk;30.0.16248370'
+          rustup toolchain install 1.89.0 --profile minimal --target aarch64-linux-android
+          git init "$RUNNER_TEMP/blocknet-core-source"
+          git -C "$RUNNER_TEMP/blocknet-core-source" remote add origin https://github.com/blocknetprivacy/core.git
+          git -C "$RUNNER_TEMP/blocknet-core-source" fetch --depth 1 origin 5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e
+          git -C "$RUNNER_TEMP/blocknet-core-source" checkout --detach FETCH_HEAD
+          export RUSTUP_TOOLCHAIN=1.89.0
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/30.0.16248370"
+          bash android/scripts/build-core-android.sh \
+            "$RUNNER_TEMP/blocknet-core-source" "$RUNNER_TEMP/core-activity" \
+            "$GITHUB_WORKSPACE/android/core-patches/0001-locked-wallet-activity.patch"
+
+      - name: Test, lint, build and verify APK
+        env:
+          CORE_VARIANT: ${{ matrix.core }}
+        run: |
+          cd android
+          gradle_args=()
+          verifier_args=()
+          if [[ "$CORE_VARIANT" == activity ]]; then
+            gradle_args+=("-PcoreActivityDir=$RUNNER_TEMP/core-activity")
+            verifier_args+=(--core-activity-dir "$RUNNER_TEMP/core-activity")
+          fi
+          ./gradlew --no-daemon "${gradle_args[@]}" testDebugUnitTest lintDebug assembleDebug
+          python3 scripts/verify-apk.py "${verifier_args[@]}"
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cp app/build/outputs/apk/debug/app-debug.apk \
+            "$GITHUB_WORKSPACE/artifacts/blocknet-wallet-arm64-$CORE_VARIANT-debug.apk"
+          cd "$GITHUB_WORKSPACE/artifacts"
+          sha256sum ./*.apk > SHA256SUMS
+          if [[ "$CORE_VARIANT" == activity ]]; then
+            cp "$RUNNER_TEMP/core-activity/build-provenance.json" .
+          fi
+
+      - name: Upload verified APK and checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: blocknet-wallet-arm64-${{ matrix.core }}-debug
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload test and lint reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-reports-${{ matrix.core }}
+          path: |
+            android/app/build/reports/tests/
+            android/app/build/reports/lint-results-debug.*
+            android/app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

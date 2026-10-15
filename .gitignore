@@ -1,0 +1,29 @@
+# Android generated files and local configuration
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+builds/*
+!builds/.gitkeep
+*.log
+.DS_Store
+# Private wallet data and credentials
+*.dat
+!android/app/src/main/assets/checkpoints-mainnet.dat
+wallet.dat
+data/
+.env
+.env.*
+
+# Supplied input archives, metadata and superseded test APK
+/android-test.zip
+/android-test/*
+!/android-test/android-test/
+/android-test/android-test/*
+!/android-test/android-test/blocknet
+!/android-test/android-test/blocknet-core-arm64-android
+!/android-test/android-test/README.txt
+*.jks
+*.keystore
+/artifacts/

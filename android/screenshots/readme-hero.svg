@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="620" viewBox="0 0 1600 620">
+<defs><radialGradient id="glow"><stop stop-color="#aafc31" stop-opacity=".2"/><stop offset="1" stop-color="#aafc31" stop-opacity="0"/></radialGradient><linearGradient id="edge"><stop stop-color="#aafc31"/><stop offset="1" stop-color="#16200e"/></linearGradient><pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" fill="none" stroke="#aafc31" stroke-opacity=".05"/></pattern></defs>
+<rect width="1600" height="620" rx="28" fill="#070906"/>
+<rect width="1600" height="620" rx="28" fill="url(#grid)"/>
+<ellipse cx="1300" cy="290" rx="460" ry="420" fill="url(#glow)"/>
+<path d="M0 1H1600" stroke="url(#edge)" stroke-width="3"/>
+<g font-family="DejaVu Sans, sans-serif">
+<text x="76" y="85" fill="#aafc31" font-family="DejaVu Sans Mono, monospace" font-size="22" letter-spacing="5">BLOCKNET / ANDROID</text>
+<text x="72" y="190" fill="#f5f8ef" font-weight="700" font-size="78">Your money.</text>
+<text x="72" y="280" fill="#aafc31" font-weight="700" font-size="70">Your keys. In your pocket.</text>
+<text x="78" y="340" fill="#b2baa7" font-size="25">A native wallet for private, zero-knowledge money.</text>
+<g font-size="19" fill="#e5ebda">
+<rect x="76" y="387" width="206" height="48" rx="24" fill="#18230f" stroke="#3a5123"/><text x="101" y="418">Native Android</text>
+<rect x="296" y="387" width="213" height="48" rx="24" fill="#18230f" stroke="#3a5123"/><text x="322" y="418">Mainnet ready</text>
+<rect x="523" y="387" width="230" height="48" rx="24" fill="#18230f" stroke="#3a5123"/><text x="547" y="418">Keys stay with you</text>
+</g>
+<path d="M76 487H970" stroke="#28351e"/>
+<text x="78" y="538" fill="#aafc31" font-family="DejaVu Sans Mono, monospace" font-size="18">BIOMETRICS  /  BRANDED QR  /  $SHORTNAMES  /  SMART SYNC</text>
+</g>
+<g transform="translate(1350 315) rotate(-10)"><rect x="-117" y="-117" width="234" height="234" rx="66" fill="#aafc31"/><g transform="translate(-117 -117) scale(3.25)"><g transform="translate(5.328 5.328) scale(.071)"><path d="M666.35,567.2H197.65c-53.02,0-96,44.21-96,98.74s42.98,98.74,96,98.74h468.71c53.02,0,96-44.21,96-98.74s-42.98-98.74-96-98.74Z" fill="black"/><path d="M729.79,359.36l-225.26-225.26c-17.75-20.03-43.67-32.66-72.54-32.66-53.51,0-96.89,43.38-96.89,96.89,0,24.97,9.44,47.72,24.95,64.9l-.17.17,240.69,240.69.18-.18c17.17,15.46,39.89,24.87,64.81,24.87,53.51,0,96.89-43.38,96.89-96.89,0-28.87-12.63-54.79-32.66-72.54Z" fill="black"/></g></g>
+<circle cx="0" cy="0" r="180" fill="none" stroke="#aafc31" stroke-opacity=".24"/>
+<circle cx="0" cy="0" r="219" fill="none" stroke="#aafc31" stroke-opacity=".1" stroke-dasharray="5 12"/></g>
+</svg>

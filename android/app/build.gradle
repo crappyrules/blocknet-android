@@ -1,0 +1,114 @@
+plugins { id 'com.android.application' }
+
+// Default builds always use the supplied programs. An experimental activity API build
+// must be selected explicitly with an absolute, provenance-checked build directory.
+def activityDirArgument = providers.gradleProperty('coreActivityDir').orNull
+def activityDirectory = activityDirArgument == null ? null : new File(activityDirArgument)
+if (activityDirectory != null && (!activityDirectory.isAbsolute() || !activityDirectory.isDirectory())) {
+    throw new GradleException('coreActivityDir must name an existing absolute experimental build directory')
+}
+def coreActivityEnabled = activityDirectory != null
+def suppliedPrograms = file('../../android-test/android-test')
+def selectedCore = coreActivityEnabled ? new File(activityDirectory, 'blocknet-core-arm64-android-experimental') : new File(suppliedPrograms, 'blocknet-core-arm64-android')
+def activityProvenance = coreActivityEnabled ? new File(activityDirectory, 'build-provenance.json') : null
+def activityPatch = rootProject.file('core-patches/0001-locked-wallet-activity.patch')
+def activityShim = rootProject.file('core-patches/0002-android-cgo-link-flags.patch')
+def sha256 = { File input -> java.security.MessageDigest.getInstance('SHA-256').digest(input.bytes).encodeHex().toString() }
+def validateActivity = {
+    if (!coreActivityEnabled) return
+    def required = [selectedCore, activityProvenance, activityPatch, activityShim,
+                    new File(activityDirectory, 'Cargo.lock'), new File(activityDirectory, 'applied.patch'),
+                    new File(activityDirectory, 'android-cgo-link-flags.patch')]
+    required.each { if (!it.isFile()) throw new GradleException("Missing experimental Core build input: $it") }
+    def provenance
+    try { provenance = new groovy.json.JsonSlurper().parse(activityProvenance) }
+    catch (Exception error) { throw new GradleException('Invalid experimental Core build provenance', error) }
+    if (!(provenance instanceof Map) || provenance.experimental != true ||
+        provenance.baseline_repository != 'https://github.com/blocknetprivacy/core' ||
+        provenance.baseline_commit != '5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e') {
+        throw new GradleException('Experimental Core provenance must identify the reviewed activity API baseline')
+    }
+    def expected = [binary_sha256: selectedCore,
+                    original_binary_sha256: new File(suppliedPrograms, 'blocknet-core-arm64-android'),
+                    patch_sha256: activityPatch, android_link_shim_sha256: activityShim,
+                    cargo_lock_sha256: file('../core-patches/core-activity.Cargo.lock')]
+    expected.each { field, input ->
+        if (!(provenance[field] instanceof String) || !(provenance[field] ==~ /[0-9a-f]{64}/) || provenance[field] != sha256(input))
+            throw new GradleException("Experimental Core provenance $field does not match $input")
+    }
+    if (sha256(new File(activityDirectory, 'applied.patch')) != provenance.patch_sha256 ||
+        sha256(new File(activityDirectory, 'android-cgo-link-flags.patch')) != provenance.android_link_shim_sha256 ||
+        sha256(new File(activityDirectory, 'Cargo.lock')) != provenance.cargo_lock_sha256)
+        throw new GradleException('Experimental build patch copies differ from the reviewed source patches')
+}
+validateActivity()
+
+// Android extracts these PIE executables into its executable native library directory.
+// Sync both outputs explicitly, including removal of an experimental asset on default builds.
+def bundledNative = layout.buildDirectory.dir('generated/blocknetNative')
+def activityAssets = layout.buildDirectory.dir('generated/blocknetCoreActivityAssets')
+tasks.register('prepareBlocknetBinaries') {
+    inputs.files(new File(suppliedPrograms, 'blocknet'), new File(suppliedPrograms, 'blocknet-core-arm64-android'), selectedCore, activityPatch, activityShim)
+    if (coreActivityEnabled) inputs.files(activityProvenance, new File(activityDirectory, 'Cargo.lock'), new File(activityDirectory, 'applied.patch'), new File(activityDirectory, 'android-cgo-link-flags.patch'))
+    inputs.property('coreActivityEnabled', coreActivityEnabled)
+    outputs.dir(bundledNative)
+    outputs.dir(activityAssets)
+    doLast {
+        validateActivity()
+        [new File(suppliedPrograms, 'blocknet'), selectedCore].each {
+            if (!it.isFile()) throw new GradleException("Required Android executable is missing: $it")
+        }
+        project.delete(bundledNative.get().asFile, activityAssets.get().asFile)
+        def nativeDirectory = bundledNative.get().dir('arm64-v8a').asFile
+        nativeDirectory.mkdirs()
+        activityAssets.get().asFile.mkdirs()
+        project.copy { from new File(suppliedPrograms, 'blocknet'); into nativeDirectory; rename { 'libmantle.so' } }
+        project.copy { from selectedCore; into nativeDirectory; rename { 'libblocknet_core.so' } }
+        if (coreActivityEnabled) project.copy { from activityProvenance; into activityAssets.get().asFile; rename { 'core-activity-build-provenance.json' } }
+    }
+}
+
+android {
+    namespace 'com.blocknet.wallet'
+    compileSdk 36
+    buildToolsVersion '36.0.0'
+    defaultConfig {
+        applicationId 'com.blocknet.wallet'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '1.0.0'
+        testInstrumentationRunner project.hasProperty('activityIntegration') ? 'com.blocknet.wallet.WalletActivityInstrumentation' : project.hasProperty('cameraIntegration') ? 'com.blocknet.wallet.WalletCameraInstrumentation' : project.hasProperty('notificationIntegration') ? 'com.blocknet.wallet.WalletNotificationInstrumentation' : project.hasProperty('shortnameIntegration') ? 'com.blocknet.wallet.ShortnameVerificationInstrumentation' : project.hasProperty('biometricIntegration') ? 'com.blocknet.wallet.WalletBiometricInstrumentation' : project.hasProperty('networkIntegration') ? 'com.blocknet.wallet.WalletNetworkInstrumentation' : project.hasProperty('identityIntegration') ? 'com.blocknet.wallet.WalletIdentityInstrumentation' : project.hasProperty('checkpointIntegration') ? 'com.blocknet.wallet.WalletCheckpointInstrumentation' : project.hasProperty('deviceIntegration') ? 'com.blocknet.wallet.WalletDeviceInstrumentation' : project.hasProperty('apiIntegration') ? 'com.blocknet.wallet.WalletApiInstrumentation' : 'com.blocknet.wallet.WalletSmokeInstrumentation'
+        ndk { abiFilters 'arm64-v8a' }
+        buildConfigField 'String', 'CORE_VERSION', coreActivityEnabled ? '"0.22.0-activity1"' : '"0.22.0"'
+        buildConfigField 'boolean', 'CORE_ACTIVITY_API', coreActivityEnabled.toString()
+        buildConfigField 'String', 'MANTLE_VERSION', '"1.2.0"'
+    }
+    sourceSets.main.jniLibs.srcDirs = [bundledNative]
+    sourceSets.main.assets.srcDir(activityAssets)
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols += ['**/libmantle.so', '**/libblocknet_core.so']
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    lint { abortOnError true }
+}
+
+tasks.named('preBuild').configure { dependsOn 'prepareBlocknetBinaries' }
+dependencies {
+    implementation 'com.google.zxing:core:3.5.3'
+    implementation 'org.bouncycastle:bcprov-jdk15to18:1.86'
+    testImplementation 'junit:junit:4.13.2'
+}

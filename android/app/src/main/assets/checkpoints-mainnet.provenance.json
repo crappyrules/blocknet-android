@@ -1,0 +1,10 @@
+{
+  "filename": "checkpoints-mainnet.dat",
+  "network": "mainnet",
+  "source": "https://bntpool.com/checkpoints.dat",
+  "sha256": "27e47c881cb8574872be1b3790bb7827a5b483fedc847eabcb686605671d34e0",
+  "retrieved_utc": "2026-10-15T18:31:44.629629+00:00",
+  "retrieved_utc_basis": "Original downloaded file modification time",
+  "entries": 662,
+  "max_height": 66200
+}

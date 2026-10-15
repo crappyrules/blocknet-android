@@ -1,0 +1,340 @@
+diff --git a/api_routes.go b/api_routes.go
+index b394d93..9c77840 100644
+--- a/api_routes.go
++++ b/api_routes.go
+@@ -31,6 +31,7 @@ func (s *APIServer) registerPrivateRoutes(mux *http.ServeMux) {
+ 	mux.HandleFunc("GET /api/wallet/history", s.handleHistory)
+ 	mux.HandleFunc("GET /api/wallet/history/page", s.handleHistoryPage)
+ 	mux.HandleFunc("GET /api/wallet/sends", s.handleSends)
++	mux.HandleFunc("GET /api/wallet/activity", s.handleWalletActivity)
+ 	mux.HandleFunc("GET /api/wallet/outputs", s.handleOutputs)
+ 	mux.HandleFunc("POST /api/wallet/send", s.handleSend)
+ 	mux.HandleFunc("GET /api/wallet/send/status", s.handleSendStatus)
+diff --git a/api_wallet_activity.go b/api_wallet_activity.go
+new file mode 100644
+index 0000000..60f947a
+--- /dev/null
++++ b/api_wallet_activity.go
+@@ -0,0 +1,132 @@
++package main
++
++import (
++	"crypto/sha256"
++	"fmt"
++	"net/http"
++	"sort"
++	"strings"
++)
++
++// handleWalletActivity exposes a deliberately narrow, authenticated read-only
++// activity snapshot while the loaded wallet is API-locked. It never unlocks a
++// wallet, exports keys, or changes existing spending/seed/history permissions.
++func (s *APIServer) handleWalletActivity(w http.ResponseWriter, r *http.Request) {
++	s.mu.RLock()
++	defer s.mu.RUnlock()
++	loaded := s.wallet
++	if loaded == nil {
++		writeError(w, http.StatusServiceUnavailable, "no wallet loaded")
++		return
++	}
++	kind := r.URL.Query().Get("kind")
++	if kind == "" {
++		kind = "outputs"
++	}
++	if kind != "outputs" && kind != "sends" {
++		writeError(w, http.StatusBadRequest, "kind must be outputs or sends")
++		return
++	}
++	limit, err := parseWalletSendsIntQuery(r, "limit", 100, 1, 100)
++	if err != nil {
++		writeError(w, http.StatusBadRequest, err.Error())
++		return
++	}
++	offset, err := parseWalletSendsIntQuery(r, "offset", 0, 0, 0)
++	if err != nil {
++		writeError(w, http.StatusBadRequest, err.Error())
++		return
++	}
++	order := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("order")))
++	if order == "" {
++		order = "desc"
++	}
++	if order != "asc" && order != "desc" {
++		writeError(w, http.StatusBadRequest, "order must be asc or desc")
++		return
++	}
++	syncedHeight, chainHeight := loaded.SyncedHeight(), s.daemon.Chain().Height()
++	scanning := chainHeight > syncedHeight && chainHeight-syncedHeight > uint64(MaxReorgDepth)
++	identity := sha256.Sum256([]byte("blocknet-wallet-activity-v1\x00" + loaded.Address()))
++	response := map[string]any{
++		"version": 1, "wallet_id": fmt.Sprintf("%x", identity),
++		"locked": s.locked, "synced_height": syncedHeight, "scanning": scanning,
++		"chain_height": chainHeight, "kind": kind,
++		"limit": limit, "offset": offset, "order": order,
++	}
++	// These are value-only projections; never marshal wallet objects or records.
++	type entry struct {
++		TxID           string  `json:"txid"`
++		Direction      string  `json:"direction"`
++		OutputIndex    *int    `json:"output_index,omitempty"`
++		Amount         *uint64 `json:"amount,omitempty"`
++		TotalAmount    *uint64 `json:"total_amount,omitempty"`
++		BlockHeight    *uint64 `json:"block_height,omitempty"`
++		RecordedHeight *uint64 `json:"recorded_height,omitempty"`
++		Timestamp      *int64  `json:"timestamp,omitempty"`
++	}
++	entries := make([]entry, 0)
++	if kind == "outputs" {
++		for _, output := range loaded.AllOutputs() {
++			if output == nil {
++				continue
++			}
++			index, amount, height := output.OutputIndex, output.Amount, output.BlockHeight
++			entries = append(entries, entry{TxID: fmt.Sprintf("%x", output.TxID), Direction: "received", OutputIndex: &index, Amount: &amount, BlockHeight: &height})
++		}
++		sort.Slice(entries, func(i, j int) bool {
++			a, b := entries[i], entries[j]
++			less := false
++			if (*a.BlockHeight == 0) != (*b.BlockHeight == 0) {
++				less = *a.BlockHeight == 0
++			} else if *a.BlockHeight != *b.BlockHeight {
++				less = *a.BlockHeight > *b.BlockHeight
++			} else if a.TxID != b.TxID {
++				less = a.TxID < b.TxID
++			} else {
++				less = *a.OutputIndex < *b.OutputIndex
++			}
++			if order == "asc" { // Reverse the strict newest-first ordering, including ties.
++				if a.TxID == b.TxID && *a.OutputIndex == *b.OutputIndex {
++					return false
++				}
++				return !less
++			}
++			return less
++		})
++	} else {
++		seen := make(map[[32]byte]bool)
++		for _, record := range loaded.SendRecords() {
++			if record == nil || seen[record.TxID] {
++				continue
++			}
++			seen[record.TxID] = true
++			amount, height, timestamp := record.TotalAmount(), record.BlockHeight, record.Timestamp
++			entries = append(entries, entry{TxID: fmt.Sprintf("%x", record.TxID), Direction: "sent", TotalAmount: &amount, RecordedHeight: &height, Timestamp: &timestamp})
++		}
++		sort.Slice(entries, func(i, j int) bool {
++			a, b := entries[i], entries[j]
++			if *a.Timestamp == *b.Timestamp {
++				if order == "asc" {
++					return a.TxID < b.TxID
++				}
++				return a.TxID > b.TxID
++			}
++			if order == "asc" {
++				return *a.Timestamp < *b.Timestamp
++			}
++			return *a.Timestamp > *b.Timestamp
++		})
++	}
++	total := len(entries)
++	start := offset
++	if start > total {
++		start = total
++	}
++	end := start + limit
++	if end > total {
++		end = total
++	}
++	response["count"], response["total"], response[kind] = end-start, total, entries[start:end]
++	writeJSON(w, http.StatusOK, response)
++}
+diff --git a/api_wallet_activity_test.go b/api_wallet_activity_test.go
+new file mode 100644
+index 0000000..eefeb68
+--- /dev/null
++++ b/api_wallet_activity_test.go
+@@ -0,0 +1,184 @@
++package main
++
++import (
++	"bytes"
++	"crypto/sha256"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"path/filepath"
++	"testing"
++
++	"blocknet/wallet"
++)
++
++func TestWalletActivityLockedContract(t *testing.T) {
++	// In-memory HTTP handlers and synthetic wallet records only. No daemon start,
++	// listener, miner, transaction builder, or public-network connection.
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	chain, _, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	daemon, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	loaded, err := wallet.NewWallet(filepath.Join(t.TempDir(), "activity.wallet.dat"), []byte("synthetic-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	api := NewAPIServer(daemon, loaded, nil, t.TempDir(), []byte("synthetic-password"))
++	mux := http.NewServeMux()
++	api.registerPrivateRoutes(mux)
++	handler := authMiddleware("synthetic-token", mux)
++	request := func(method, path string, authorized bool) *httptest.ResponseRecorder {
++		r := httptest.NewRequest(method, path, bytes.NewBufferString("{}"))
++		if authorized {
++			r.Header.Set("Authorization", "Bearer synthetic-token")
++		}
++		rr := httptest.NewRecorder()
++		handler.ServeHTTP(rr, r)
++		return rr
++	}
++	decode := func(rr *httptest.ResponseRecorder) map[string]json.RawMessage {
++		t.Helper()
++		if rr.Code != 200 {
++			t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
++		}
++		var value map[string]json.RawMessage
++		if err := json.Unmarshal(rr.Body.Bytes(), &value); err != nil {
++			t.Fatal(err)
++		}
++		return value
++	}
++	if got := request("GET", "/api/wallet/activity", false).Code; got != 401 {
++		t.Fatalf("unauthorized=%d", got)
++	}
++	public := http.NewServeMux()
++	api.registerPublicRoutes(public)
++	rr := httptest.NewRecorder()
++	public.ServeHTTP(rr, httptest.NewRequest("GET", "/api/wallet/activity", nil))
++	if rr.Code != 404 {
++		t.Fatal("activity exposed on public explorer")
++	}
++	if got := request("POST", "/api/wallet/lock", true).Code; got != 200 {
++		t.Fatalf("lock=%d", got)
++	}
++	empty := decode(request("GET", "/api/wallet/activity", true))
++	if string(empty["outputs"]) != "[]" || string(empty["count"]) != "0" || string(empty["locked"]) != "true" {
++		t.Fatalf("bad empty locked snapshot: %v", empty)
++	}
++	wantID := fmt.Sprintf("%x", sha256.Sum256([]byte("blocknet-wallet-activity-v1\x00"+loaded.Address())))
++	var gotID string
++	json.Unmarshal(empty["wallet_id"], &gotID)
++	if gotID != wantID {
++		t.Fatal("wallet identity binding differs")
++	}
++	for _, route := range []string{"/api/wallet/seed", "/api/wallet/send", "/api/wallet/sign"} {
++		if got := request("POST", route, true).Code; got != 403 {
++			t.Fatalf("locked %s=%d", route, got)
++		}
++	}
++	for _, route := range []string{"/api/wallet/history/page", "/api/wallet/sends", "/api/wallet/address"} {
++		if got := request("GET", route, true).Code; got != 403 {
++			t.Fatalf("locked %s=%d", route, got)
++		}
++	}
++	for i := 0; i < 4; i++ {
++		loaded.AddOutput(&wallet.OwnedOutput{TxID: [32]byte{byte(i/2 + 1)}, OutputIndex: i % 2, Amount: uint64(100 + i), BlockHeight: uint64(i / 2), Memo: []byte("private-memo-sentinel")})
++		loaded.RecordSend(&wallet.SendRecord{TxID: [32]byte{byte(10 + i)}, Timestamp: int64(i / 2), BlockHeight: uint64(i), Recipients: []wallet.SendRecipient{{Address: "private-recipient-sentinel", Amount: uint64(300 + i), Memo: []byte("private-send-memo-sentinel")}}})
++	}
++	loaded.SetSyncedHeight(0)
++	// Lock remains true; activity now includes observations made after locking.
++	for _, kind := range []string{"outputs", "sends"} {
++		for _, order := range []string{"asc", "desc"} {
++			pages := make([]map[string]json.RawMessage, 0)
++			for offset := 0; offset < 4; offset += 2 {
++				page := decode(request("GET", fmt.Sprintf("/api/wallet/activity?kind=%s&limit=2&offset=%d&order=%s", kind, offset, order), true))
++				if string(page["total"]) != "4" || string(page["count"]) != "2" || string(page["locked"]) != "true" || string(page["wallet_id"]) != string(empty["wallet_id"]) {
++					t.Fatal("page metadata/identity changed")
++				}
++				var rows []map[string]json.RawMessage
++				json.Unmarshal(page[kind], &rows)
++				pages = append(pages, rows...)
++				allowed := map[string]bool{"txid": true, "direction": true, "output_index": true, "amount": true, "total_amount": true, "block_height": true, "recorded_height": true, "timestamp": true}
++				for _, row := range rows {
++					for key := range row {
++						if !allowed[key] {
++							t.Fatalf("private field leaked: %s", key)
++						}
++					}
++				}
++			}
++			// Compare ordering and numeric fields to the existing unlocked API, then
++			// lock again. No spending operation is called while unlocked.
++			api.mu.Lock()
++			api.locked = false
++			api.mu.Unlock()
++			path := "/api/wallet/sends"
++			if kind == "outputs" {
++				path = "/api/wallet/history/page"
++			}
++			original := decode(request("GET", path+"?limit=4&order="+order, true))
++			api.mu.Lock()
++			api.locked = true
++			api.mu.Unlock()
++			var expected []map[string]json.RawMessage
++			json.Unmarshal(original[kind], &expected)
++			if len(expected) != len(pages) {
++				t.Fatal("pagination lost rows")
++			}
++			for i, row := range pages {
++				for key, value := range row {
++					if key == "direction" {
++						continue
++					}
++					if !bytes.Equal(value, expected[i][key]) {
++						t.Fatalf("%s %s row%d field%s does not match existing API", kind, order, i, key)
++					}
++				}
++			}
++		}
++	}
++	for _, query := range []string{"?limit=0", "?limit=-1", "?offset=-1", "?offset=nope", "?kind=keys", "?order=invalid"} {
++		if got := request("GET", "/api/wallet/activity"+query, true).Code; got != 400 {
++			t.Fatalf("invalid %s=%d", query, got)
++		}
++	}
++	clamped := decode(request("GET", "/api/wallet/activity?limit=101&offset=999", true))
++	if string(clamped["limit"]) != "100" || string(clamped["count"]) != "0" {
++		t.Fatal("bounds not enforced")
++	}
++	other, err := wallet.NewWallet(filepath.Join(t.TempDir(), "other.wallet.dat"), []byte("synthetic-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	api.mu.Lock()
++	api.wallet = other
++	api.mu.Unlock()
++	replaced := decode(request("GET", "/api/wallet/activity", true))
++	if string(replaced["wallet_id"]) == string(empty["wallet_id"]) {
++		t.Fatal("wallet replacement reused identity")
++	}
++	chain.mu.Lock()
++	chain.height = uint64(MaxReorgDepth) + 1
++	chain.publishTipLocked()
++	chain.mu.Unlock()
++	behind := decode(request("GET", "/api/wallet/activity", true))
++	if string(behind["scanning"]) != "true" {
++		t.Fatal("scan lag not reported while locked")
++	}
++	allowedTop := map[string]bool{"version": true, "wallet_id": true, "locked": true, "synced_height": true, "scanning": true, "chain_height": true, "kind": true, "limit": true, "offset": true, "order": true, "count": true, "total": true, "outputs": true}
++	for key := range behind {
++		if !allowedTop[key] {
++			t.Fatalf("unexpected top-level field: %s", key)
++		}
++	}
++	api.mu.Lock()
++	api.wallet = nil
++	api.mu.Unlock()
++	if got := request("GET", "/api/wallet/activity", true).Code; got != 503 {
++		t.Fatalf("unloaded=%d", got)
++	}
++	if got := request("GET", "/api/wallet/activity", false).Code; got != 401 {
++		t.Fatalf("unloaded unauthorized=%d", got)
++	}
++}

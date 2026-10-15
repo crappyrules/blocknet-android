@@ -1,0 +1,16 @@
+{
+  "filename": "mnemonic-english.txt",
+  "standard": "BIP39",
+  "language": "English",
+  "entries": 2048,
+  "sha256": "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda",
+  "source_repository": "https://github.com/blocknetprivacy/core",
+  "source_commit": "5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e",
+  "source_path": "wallet/wordlist.go",
+  "source_url": "https://github.com/blocknetprivacy/core/blob/5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e/wallet/wordlist.go",
+  "source_sha256": "7bb68ce93a3f8428fbbef368809e832360a647e9f20ca68535949a83d637feda",
+  "derivation": "Exact string entries in source order, one lowercase ASCII word per line, UTF-8 with final newline.",
+  "license_filename": "blocknet-core-LICENSE.txt",
+  "license_source_path": "LICENSE",
+  "license_sha256": "47eb78a8a1d00990787c7f3918e8cf6b5d609ba6214815a2582eca83e2533688"
+}

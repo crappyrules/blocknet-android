@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Lime sampled from the user's supplied Blocknet application icon. -->
+    <color name="ic_launcher_background">#AAFC31</color>
+</resources>
