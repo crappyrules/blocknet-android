@@ -40,13 +40,14 @@ jobs:
           java-version: '17'
 
       - name: Set up Gradle and validate wrapper
-        uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5 (Node 24)
         with:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4 (Node 24)
         with:
+          cmdline-tools-version: '12266719' # Preserve the validated Java 17 SDK toolchain.
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
       - name: Set up Go for activity Core
@@ -94,7 +95,7 @@ jobs:
           fi
 
       - name: Upload verified APK and checksum
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (Node 24)
         with:
           name: blocknet-wallet-arm64-${{ matrix.core }}-debug
           path: artifacts/
@@ -103,7 +104,7 @@ jobs:
 
       - name: Upload test and lint reports
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (Node 24)
         with:
           name: android-reports-${{ matrix.core }}
           path: |
