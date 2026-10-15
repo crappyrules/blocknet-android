@@ -1,7 +1,7 @@
 ![Blocknet Android — Your money. Your keys. In your pocket.](android/screenshots/readme-hero.svg)
 
 <p align="center">
-  <a href="https://github.com/crappyrules/blocknet-android/actions/workflows/android.yml"><img alt="Android APK build" src="https://github.com/crappyrules/blocknet-android/actions/workflows/android.yml/badge.svg"></a>
+  <a href="https://github.com/crappyrules/blocknet-android/actions/workflows/android.yml?query=branch%3Amaster"><img alt="Android APK build on master" src="https://github.com/crappyrules/blocknet-android/actions/workflows/android.yml/badge.svg?branch=master&amp;event=push"></a>
   <img alt="Android 8 and newer" src="https://img.shields.io/badge/Android-8%2B-AAFC31?style=flat-square&amp;labelColor=11150d">
   <img alt="ARM64" src="https://img.shields.io/badge/Architecture-ARM64-AAFC31?style=flat-square&amp;labelColor=11150d">
   <img alt="Mainnet" src="https://img.shields.io/badge/Network-Mainnet-AAFC31?style=flat-square&amp;labelColor=11150d">
@@ -10,6 +10,8 @@
 # Blocknet Android Wallet
 
 Native Android wallet for Blocknet mainnet, using Blocknet Core and Mantle.
+
+<p align="center"><a href="https://github.com/crappyrules/blocknet-android/releases"><strong>Download the Android preview APK →</strong></a></p>
 
 ## Private money. Native experience.
 
@@ -50,7 +52,8 @@ Locked-wallet alerts require the **activity** Core build and opening the wallet 
 - [Build and setup](android/README.md)
 - [Acceptance results](android/docs/ACCEPTANCE.md)
 - [Core build instructions](android/docs/CORE_ANDROID_BUILD.md)
-- [Download a CI build](https://github.com/crappyrules/blocknet-android/actions/workflows/android.yml)
+- [Download APKs from Releases](https://github.com/crappyrules/blocknet-android/releases)
+- [Browse CI builds and test reports](https://github.com/crappyrules/blocknet-android/actions/workflows/android.yml)
 
 The `android-test` directory contains the supplied ARM64 build inputs.
 
@@ -70,6 +73,11 @@ These are debug APKs signed with the runner's disposable Android debug key.
 They are suitable for testing, and may require uninstalling an APK signed by a different
 key. Export an encrypted wallet backup before uninstalling. Stable release signing
 requires a separately configured signing key; no private signing key is in this repository.
+
+Version tags (`v*`) publish both verified APK variants, combined checksums and Core build
+provenance to a GitHub **preview release** after both build jobs succeed. Release assets
+remain available after the CI artifact retention period. See the [release notes](android/docs/RELEASE_NOTES.md)
+for installation and signing details.
 
 CI does not run a node, access wallets, or perform funded transactions. Device acceptance
 results and remaining physical checks are documented in `android/docs/ACCEPTANCE.md`.
