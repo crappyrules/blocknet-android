@@ -57,7 +57,7 @@ The `android-test` directory contains the supplied ARM64 build inputs.
 ## GitHub Actions APK builds
 
 [Build Android APK](https://github.com/crappyrules/blocknet-android/actions/workflows/android.yml)
-runs on pushes to `main`, pull requests, version tags, and manual **Run workflow** requests.
+runs on pushes to `master`, pull requests, version tags, and manual **Run workflow** requests.
 Each run tests, lints, builds and verifies two ARM64 APKs:
 
 - **activity**: rebuilds the pinned Core source with the reviewed activity patches;

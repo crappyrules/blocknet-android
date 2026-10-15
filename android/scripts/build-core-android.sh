@@ -15,7 +15,9 @@ if [[ -n "$patch_file" ]]; then patch_file="$(realpath -- "$patch_file")"; [[ -r
 [[ ! -e "$output_directory" ]] || { printf 'Output directory must not already exist.\n' >&2; exit 1; }
 [[ "$output_directory" != "$source_checkout" && "$output_directory" != "$source_checkout/"* && "$output_directory" != "$supplied_root" && "$output_directory" != "$supplied_root/"* ]] || { printf 'Output must be isolated from source and supplied executables.\n' >&2; exit 1; }
 [[ "$(git -C "$source_checkout" rev-parse HEAD)" = "$baseline" ]] || { printf 'Source checkout must be at the recorded supplied-binary baseline commit.\n' >&2; exit 1; }
-for tool in git tar python3 cargo rustc rustup go install rg realpath; do command -v "$tool" >/dev/null; done
+for tool in git tar python3 cargo rustc rustup go install grep realpath; do
+    command -v "$tool" >/dev/null || { printf 'Required build tool is missing: %s\n' "$tool" >&2; exit 1; }
+done
 [[ "$android_api" =~ ^[0-9]+$ ]] && ((android_api>=24)) || { printf 'ANDROID_API must be an integer >=24.\n' >&2; exit 1; }
 ndk_root="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 if [[ -z "$ndk_root" ]]; then ndk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/ndk/$ndk_revision"; fi
@@ -43,7 +45,7 @@ toolchain="$ndk_root/toolchains/llvm/prebuilt/$host_tag/bin"
 cc="$toolchain/aarch64-linux-android${android_api}-clang"
 cxx="$toolchain/aarch64-linux-android${android_api}-clang++"
 [[ -x "$cc" && -x "$cxx" && -x "$toolchain/llvm-ar" && -x "$toolchain/llvm-readelf" ]]
-rustup target list --installed | rg -x 'aarch64-linux-android' >/dev/null || { printf 'Install the Rust aarch64-linux-android target before running this script.\n' >&2; exit 1; }
+rustup target list --installed | grep -Fxq 'aarch64-linux-android' || { printf 'Install the Rust aarch64-linux-android target before running this script.\n' >&2; exit 1; }
 cargo_lock="${BLOCKNET_CARGO_LOCK:-$script_root/core-patches/core-activity.Cargo.lock}"
 [[ -r "$cargo_lock" ]] || { printf 'The baseline ignores Cargo.lock; set BLOCKNET_CARGO_LOCK to a reviewed resolved lockfile.\n' >&2; exit 1; }
 cargo_lock="$(realpath -- "$cargo_lock")"
