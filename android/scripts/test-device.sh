@@ -8,7 +8,7 @@ adb_bin="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/platform-tools/adb"
 if [[ ! -x "$adb_bin" ]]; then adb_bin="$(command -v adb)"; fi
 [[ "$("$adb_bin" -s "$device_serial" get-state)" = device ]]
 [[ "$("$adb_bin" -s "$device_serial" shell uname -m | tr -d '\r')" = aarch64 ]]
-./gradlew -PdeviceIntegration assembleDebug assembleDebugAndroidTest
+./gradlew -PofflineWalletViewDir="${OFFLINE_WALLET_VIEW_DIR:?Build the pinned offline wallet reader and set OFFLINE_WALLET_VIEW_DIR}" -PdeviceIntegration assembleDebug assembleDebugAndroidTest
 "$adb_bin" -s "$device_serial" install --user 0 -r app/build/outputs/apk/debug/app-debug.apk
 "$adb_bin" -s "$device_serial" install --user 0 -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 sdk_level="$("$adb_bin" -s "$device_serial" shell getprop ro.build.version.sdk | tr -d '\r')"

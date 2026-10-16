@@ -8,6 +8,8 @@ builds/*
 !builds/.gitkeep
 *.log
 .DS_Store
+__pycache__/
+*.pyc
 # Private wallet data and credentials
 *.dat
 !android/app/src/main/assets/checkpoints-mainnet.dat

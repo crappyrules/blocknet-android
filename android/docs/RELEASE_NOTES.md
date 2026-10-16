@@ -2,6 +2,18 @@
 
 A native ARM64 Android wallet for Blocknet mainnet. Requires Android 8 or newer.
 
+### BACK UP BEFORE ANY UPGRADE — EXISTING WALLET DATA IS AT RISK
+
+Published preview APKs used disposable signing certificates, including different
+certificates for the supplied and activity variants. Android rejects an in-place
+update signed with a different certificate. **Do not uninstall the old wallet or
+clear its app data to make a new APK install.** Keep the old installation until
+you have verified recovery on a separate installation. A phrase restores only
+wallets created from a phrase; wallets imported from spend/view keys have no
+phrase. Those wallets require their original keys or an encrypted wallet backup
+and its password. If every usable recovery copy is lost, access to the coins
+can be lost permanently. Signing and phone migration checks are still pending.
+
 ### Download
 
 - **blocknet-wallet-arm64-activity-debug.apk** — includes the source-built activity Core;
@@ -11,6 +23,7 @@ A native ARM64 Android wallet for Blocknet mainnet. Requires Android 8 or newer.
   supplied Core. Incoming transaction alerts require an unlocked wallet.
 - **SHA256SUMS** — verify the downloaded APK with `sha256sum --check SHA256SUMS`.
 - **core-activity-build-provenance.json** — pinned source, patch, toolchain and binary hashes.
+- **offline-wallet-view-build-provenance.json** — pinned source and binary hash for the read-only local wallet reader.
 
 ### Features
 
@@ -22,10 +35,10 @@ A native ARM64 Android wallet for Blocknet mainnet. Requires Android 8 or newer.
 
 ### Preview status
 
-These APKs are debug builds signed with a disposable CI debug key. Signing keys may differ
-between runs and from a locally installed build. Android may refuse an in-place update.
-**Export an encrypted wallet backup and confirm your recovery material before uninstalling;
-uninstalling deletes the app's local wallet data.** Stable release signing is not configured yet.
+These APKs are debug builds signed with disposable CI keys. A separate local
+release key has been used for a local test build, but no signed APK has been
+published and no safe migration has been completed. Keep any existing installation until
+recovery is verified.
 
 CI runs unit tests, Android lint and APK payload verification for both variants. CI does not
 perform physical biometric, camera, audible notification or real-funds acceptance tests.

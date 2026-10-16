@@ -9,10 +9,12 @@ import re
 import shutil
 import subprocess
 import zipfile
+from apk_launcher import verify_launcher
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('apk', nargs='?', default='app/build/outputs/apk/debug/app-debug.apk')
 parser.add_argument('--core-activity-dir', help='Explicit absolute experimental Core build directory; never auto-detected')
+parser.add_argument('--offline-wallet-view-dir', required=True, help='Absolute pinned offline wallet reader build directory')
 parser.add_argument('--aapt2', help='Path to Android SDK aapt2 for compiled manifest/resource verification')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
@@ -52,7 +54,8 @@ def verified_activity_inputs(directory):
     patches = root / 'core-patches'
     required = [provenance_file, binary_file, directory / 'Cargo.lock', directory / 'applied.patch',
                 directory / 'android-cgo-link-flags.patch', patches / '0001-locked-wallet-activity.patch',
-                patches / '0002-android-cgo-link-flags.patch']
+                patches / '0002-android-cgo-link-flags.patch', patches / '0003-onchain-announcement-scan.patch',
+                directory / 'onchain-announcement-scan.patch']
     require(all(path.is_file() for path in required), 'Experimental Core build is missing its binary, provenance, lockfile or reviewed patch copies')
     provenance_bytes = provenance_file.read_bytes()
     try:
@@ -68,6 +71,7 @@ def verified_activity_inputs(directory):
                 'original_binary_sha256': inputs / 'blocknet-core-arm64-android',
                 'patch_sha256': patches / '0001-locked-wallet-activity.patch',
                 'android_link_shim_sha256': patches / '0002-android-cgo-link-flags.patch',
+                'announcement_scan_patch_sha256': patches / '0003-onchain-announcement-scan.patch',
                 'cargo_lock_sha256': root / 'core-patches/core-activity.Cargo.lock'}
     for key, path in expected.items():
         recorded = provenance.get(key)
@@ -75,13 +79,26 @@ def verified_activity_inputs(directory):
                 recorded == hashlib.sha256(path.read_bytes()).hexdigest(),
                 f'Experimental Core {key} does not match {path}')
     require(hashlib.sha256((directory / 'applied.patch').read_bytes()).hexdigest() == provenance['patch_sha256'] and
-            hashlib.sha256((directory / 'android-cgo-link-flags.patch').read_bytes()).hexdigest() == provenance['android_link_shim_sha256'],
+            hashlib.sha256((directory / 'android-cgo-link-flags.patch').read_bytes()).hexdigest() == provenance['android_link_shim_sha256'] and
+            hashlib.sha256((directory / 'onchain-announcement-scan.patch').read_bytes()).hexdigest() == provenance['announcement_scan_patch_sha256'],
             'Experimental build patch copies differ from the reviewed source patches')
     return binary_file.read_bytes(), provenance_bytes
 
 activity_inputs = verified_activity_inputs(Path(args.core_activity_dir)) if args.core_activity_dir is not None else None
+view_dir = Path(args.offline_wallet_view_dir)
+require(view_dir.is_absolute() and view_dir.is_dir(), '--offline-wallet-view-dir must be an existing absolute build directory')
+view_binary = view_dir / 'blocknet-wallet-view-arm64-android'
+view_provenance = view_dir / 'build-provenance.json'
+require(view_binary.is_file() and view_provenance.is_file(), 'Offline wallet reader build is missing')
+view_record = json.loads(view_provenance.read_bytes())
+require(view_record.get('baseline_commit') == '5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e' and
+        view_record.get('binary_sha256') == hashlib.sha256(view_binary.read_bytes()).hexdigest() and
+        view_record.get('helper_source_sha256') == hashlib.sha256((root / 'offline-wallet-view/main.go').read_bytes()).hexdigest() and
+        view_record.get('helper_test_sha256') == hashlib.sha256((root / 'offline-wallet-view/main_test.go').read_bytes()).hexdigest(),
+        'Offline wallet reader provenance does not match the pinned build')
 activity_asset = 'assets/core-activity-build-provenance.json'
 with zipfile.ZipFile(apk) as archive:
+    archive_names = set(archive.namelist())
     mantle = archive.read('lib/arm64-v8a/libmantle.so')
     require(mantle == (inputs / 'blocknet').read_bytes(), 'Mantle differs from the unchanged supplied executable')
     print(f'PASS libmantle.so: {len(mantle):,} bytes SHA-256 {hashlib.sha256(mantle).hexdigest()}')
@@ -95,6 +112,11 @@ with zipfile.ZipFile(apk) as archive:
     else:
         require(activity_asset not in archive.namelist(), 'Default APK unexpectedly contains experimental Core provenance')
     print(f'PASS libblocknet_core.so: {len(actual_core):,} bytes SHA-256 {hashlib.sha256(actual_core).hexdigest()}')
+    actual_view = archive.read('lib/arm64-v8a/libblocknet_walletview.so')
+    require(actual_view == view_binary.read_bytes(), 'Offline wallet reader differs from the pinned build')
+    require(archive.read('assets/offline-wallet-view-build-provenance.json') == view_provenance.read_bytes(),
+            'Packaged offline wallet reader provenance differs from the pinned build')
+    print(f'PASS libblocknet_walletview.so: {len(actual_view):,} bytes SHA-256 {hashlib.sha256(actual_view).hexdigest()}')
     abis = {name.split('/')[1] for name in archive.namelist() if name.startswith('lib/')}
     require(abis == {'arm64-v8a'}, f'Unexpected APK native ABIs: {abis}')
     require('classes.dex' in archive.namelist(), 'APK contains no application code')
@@ -135,25 +157,13 @@ with zipfile.ZipFile(apk) as archive:
     require(hashlib.sha256(license_bytes).hexdigest() == word_provenance.get('license_sha256'), 'Core license differs from provenance')
     print('PASS mnemonic completions: exact 2048-word Core BIP39 English asset, provenance and license')
 
-    for resource in ['res/mipmap-anydpi-v26/ic_launcher.xml', 'res/mipmap-anydpi-v33/ic_launcher.xml',
-                     'res/drawable/ic_launcher_foreground.xml', 'res/drawable/ic_launcher_monochrome.xml']:
-        require(resource in archive.namelist(), f'Missing packaged launcher resource: {resource}')
-
 aapt2 = find_aapt2()
 resources = dump('resources', str(apk))
-launcher = re.search(r'resource (0x[0-9a-f]+) mipmap/ic_launcher\b', resources)
-require(launcher is not None, 'Compiled mipmap/ic_launcher resource is missing')
 manifest = dump('xmltree', str(apk), '--file', 'AndroidManifest.xml')
-for attribute in ['icon', 'roundIcon']:
-    require(re.search(rf':{attribute}\(0x[0-9a-f]+\)=@{launcher[1]}\b', manifest) is not None,
-            f'Packaged application {attribute} does not reference mipmap/ic_launcher')
-require('android.intent.action.MAIN' in manifest and 'android.intent.category.LAUNCHER' in manifest,
-        'Packaged manifest has no launcher activity')
-for version in [26, 33]:
-    icon = dump('xmltree', str(apk), '--file', f'res/mipmap-anydpi-v{version}/ic_launcher.xml')
-    require(all(f'E: {element}' in icon for element in ['adaptive-icon', 'background', 'foreground']),
-            f'Packaged API {version} launcher is not a complete adaptive icon')
-    if version == 33:
-        require('E: monochrome' in icon, 'Packaged Android 13 launcher lacks themed monochrome artwork')
+try:
+    verify_launcher(resources, manifest, archive_names,
+                    lambda path: dump('xmltree', str(apk), '--file', path))
+except ValueError as error:
+    require(False, str(error))
 print('PASS adaptive launcher: packaged foreground/monochrome artwork and manifest icon/roundIcon mappings')
 print(f'PASS {apk}: {"explicit experimental activity API" if activity_inputs else "supplied original"} native programs, mainnet checkpoint seed/provenance and launcher resources verified')

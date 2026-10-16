@@ -1,0 +1,388 @@
+diff --git a/announcement_scan.go b/announcement_scan.go
+new file mode 100644
+index 0000000..16270e4
+--- /dev/null
++++ b/announcement_scan.go
+@@ -0,0 +1,221 @@
++package main
++
++import (
++	"bytes"
++	"context"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"time"
++
++	"blocknet/protocol/params"
++	"blocknet/wallet"
++)
++
++// This private, authenticated endpoint only reads canonical blocks already on disk.
++// It has no dependency on the user's loaded wallet, keys, or lock state.
++const (
++	announcementMaxBlocks     = 8
++	announcementMaxOutputs    = 512
++	announcementMatchBatch    = 64
++	announcementMaxCandidates = 16
++	announcementTimeBudget    = 250 * time.Millisecond
++)
++
++type announcementCursor struct {
++	Height      uint64 `json:"height"`
++	TxIndex     int    `json:"tx_index"`
++	OutputIndex int    `json:"output_index"`
++}
++type announcementScanRequest struct {
++	Cursor         announcementCursor `json:"cursor"`
++	ThroughHeight  uint64             `json:"through_height"`
++	ExpectedHash   string             `json:"expected_hash"`
++	ViewPrivateKey string             `json:"view_private_key"`
++	SpendPublicKey string             `json:"spend_public_key"`
++}
++type announcementBlock struct {
++	Height     uint64   `json:"height"`
++	Hash       string   `json:"hash"`
++	Candidates []string `json:"candidates"`
++}
++type announcementScanResponse struct {
++	Version        int                 `json:"version"`
++	ChainID        uint32              `json:"chain_id"`
++	NetworkID      string              `json:"network_id"`
++	TipHeight      uint64              `json:"tip_height"`
++	Cursor         announcementCursor  `json:"cursor"`
++	Blocks         []announcementBlock `json:"blocks"`
++	OutputsScanned int                 `json:"outputs_scanned"`
++}
++type announcementMatcher func(txPub, viewPriv, spendPub [32]byte, outPubs [][32]byte, outIndices []uint32, mode uint32) ([]bool, [][32]byte, error)
++
++var errAnnouncementReorg = errors.New("announcement scan cursor changed chain")
++
++func parseAnnouncementKey(value string) ([32]byte, error) {
++	var key [32]byte
++	if len(value) != 64 {
++		return key, errors.New("announcement key must be 64 hex characters")
++	}
++	decoded, err := hex.DecodeString(value)
++	if err != nil {
++		return key, errors.New("announcement key is invalid hex")
++	}
++	copy(key[:], decoded)
++	if key == [32]byte{} {
++		return key, errors.New("announcement key must not be zero")
++	}
++	return key, nil
++}
++
++func (s *APIServer) handleAnnouncementScan(w http.ResponseWriter, r *http.Request) {
++	r.Body = http.MaxBytesReader(w, r.Body, 1024)
++	var request announcementScanRequest
++	decoder := json.NewDecoder(r.Body)
++	decoder.DisallowUnknownFields()
++	if err := decoder.Decode(&request); err != nil {
++		writeError(w, http.StatusBadRequest, "invalid announcement scan request")
++		return
++	}
++	if err := decoder.Decode(new(any)); err != io.EOF {
++		writeError(w, http.StatusBadRequest, "announcement scan request must contain one object")
++		return
++	}
++	viewPriv, err := parseAnnouncementKey(request.ViewPrivateKey)
++	if err != nil {
++		writeError(w, http.StatusBadRequest, err.Error())
++		return
++	}
++	spendPub, err := parseAnnouncementKey(request.SpendPublicKey)
++	if err != nil {
++		writeError(w, http.StatusBadRequest, err.Error())
++		return
++	}
++	if request.Cursor.TxIndex < 0 || request.Cursor.OutputIndex < 0 ||
++		(request.Cursor.TxIndex > 0 || request.Cursor.OutputIndex > 0) && len(request.ExpectedHash) != 64 {
++		writeError(w, http.StatusBadRequest, "invalid announcement scan cursor")
++		return
++	}
++	chain := s.daemon.Chain()
++	tip := chain.HeightFast()
++	if request.Cursor.Height > tip+1 {
++		writeError(w, http.StatusBadRequest, "announcement scan cursor is beyond the chain tip")
++		return
++	}
++	if request.ThroughHeight > tip {
++		writeError(w, http.StatusBadRequest, "announcement scan limit is beyond the chain tip")
++		return
++	}
++	response, err := scanAnnouncements(r.Context(), request, tip, chain.GetBlockByHeightFast,
++		viewPriv, spendPub, StealthScanBatch)
++	if err != nil {
++		if errors.Is(err, errAnnouncementReorg) {
++			writeCodedError(w, http.StatusConflict, "chain_reorg", "announcement scan cursor changed chain")
++			return
++		}
++		writeError(w, http.StatusServiceUnavailable, "announcement scan could not read a canonical block")
++		return
++	}
++	writeJSON(w, http.StatusOK, response)
++}
++
++func announcementDerivationMode(height uint64, coinbase bool) uint32 {
++	if coinbase || height < params.IndexedDerivationHeight {
++		return 0
++	}
++	if height-params.IndexedDerivationHeight < 128 {
++		return 2
++	}
++	return 1
++}
++
++func scanAnnouncements(ctx context.Context, request announcementScanRequest, tip uint64,
++	getBlock func(uint64) *Block, viewPriv, spendPub [32]byte, match announcementMatcher) (announcementScanResponse, error) {
++	response := announcementScanResponse{Version: 1, ChainID: params.ChainID, NetworkID: params.NetworkID,
++		TipHeight: tip, Cursor: request.Cursor, Blocks: []announcementBlock{}}
++	if response.Cursor.Height > request.ThroughHeight {
++		return response, nil
++	}
++	deadline := time.Now().Add(announcementTimeBudget)
++	candidates := 0
++	for scannedBlocks := 0; scannedBlocks < announcementMaxBlocks && response.Cursor.Height <= request.ThroughHeight; scannedBlocks++ {
++		if err := ctx.Err(); err != nil {
++			return response, err
++		}
++		block := getBlock(response.Cursor.Height)
++		if block == nil || block.Header.Height != response.Cursor.Height {
++			return response, errors.New("canonical block unavailable")
++		}
++		hash := fmt.Sprintf("%x", block.Hash())
++		if request.ExpectedHash != "" && response.Cursor.Height == request.Cursor.Height && request.ExpectedHash != hash {
++			return response, errAnnouncementReorg
++		}
++		row := announcementBlock{Height: response.Cursor.Height, Hash: hash, Candidates: []string{}}
++		if response.Cursor.TxIndex > len(block.Transactions) {
++			return response, errors.New("invalid transaction cursor")
++		}
++		for txIndex := response.Cursor.TxIndex; txIndex < len(block.Transactions); txIndex++ {
++			tx := block.Transactions[txIndex]
++			if tx == nil {
++				return response, errors.New("invalid stored transaction")
++			}
++			start := 0
++			if txIndex == response.Cursor.TxIndex {
++				start = response.Cursor.OutputIndex
++			}
++			if start > len(tx.Outputs) {
++				return response, errors.New("invalid output cursor")
++			}
++			for start < len(tx.Outputs) {
++				if response.OutputsScanned >= announcementMaxOutputs ||
++					(response.OutputsScanned > 0 && time.Now().After(deadline)) {
++					response.Cursor = announcementCursor{Height: row.Height, TxIndex: txIndex, OutputIndex: start}
++					response.Blocks = append(response.Blocks, row)
++					return response, nil
++				}
++				end := start + announcementMatchBatch
++				if end > len(tx.Outputs) {
++					end = len(tx.Outputs)
++				}
++				if remaining := announcementMaxOutputs - response.OutputsScanned; end-start > remaining {
++					end = start + remaining
++				}
++				outPubs := make([][32]byte, end-start)
++				outIndices := make([]uint32, end-start)
++				for i := start; i < end; i++ {
++					outPubs[i-start] = tx.Outputs[i].PublicKey
++					outIndices[i-start] = uint32(i)
++				}
++				matched, secrets, err := match(tx.TxPublicKey, viewPriv, spendPub, outPubs, outIndices,
++					announcementDerivationMode(row.Height, txIndex == 0 && row.Height > 0))
++				if err != nil || len(matched) != end-start || len(secrets) != end-start {
++					return response, errors.New("announcement matching failed")
++				}
++				for i := start; i < end; i++ {
++					response.OutputsScanned++
++					if matched[i-start] {
++						memo, ok := wallet.DecryptMemo(tx.Outputs[i].EncryptedMemo, secrets[i-start], i)
++						if ok && len(memo) == 122 && bytes.Equal(memo[:4], []byte("BNAU")) {
++							row.Candidates = append(row.Candidates, hex.EncodeToString(memo))
++							candidates++
++							if candidates == announcementMaxCandidates {
++								response.Cursor = announcementCursor{Height: row.Height, TxIndex: txIndex, OutputIndex: i + 1}
++								response.Blocks = append(response.Blocks, row)
++								return response, nil
++							}
++						}
++					}
++				}
++				start = end
++			}
++			response.Cursor.OutputIndex = 0
++		}
++		response.Blocks = append(response.Blocks, row)
++		response.Cursor = announcementCursor{Height: row.Height + 1}
++		request.ExpectedHash = ""
++	}
++	return response, nil
++}
+diff --git a/announcement_scan_test.go b/announcement_scan_test.go
+new file mode 100644
+index 0000000..d83a5b9
+--- /dev/null
++++ b/announcement_scan_test.go
+@@ -0,0 +1,143 @@
++package main
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"strings"
++	"testing"
++
++	"blocknet/protocol/params"
++	"blocknet/wallet"
++)
++
++func noAnnouncementMatches(_, _, _ [32]byte, pubs [][32]byte, _ []uint32, _ uint32) ([]bool, [][32]byte, error) {
++	return make([]bool, len(pubs)), make([][32]byte, len(pubs)), nil
++}
++
++func TestAnnouncementScanBoundsAndResume(t *testing.T) {
++	block := &Block{Header: BlockHeader{Height: 5}, Transactions: []*Transaction{{Outputs: make([]TxOutput, 600)}}}
++	get := func(height uint64) *Block {
++		if height == 5 {
++			return block
++		}
++		return nil
++	}
++	request := announcementScanRequest{Cursor: announcementCursor{Height: 5}, ThroughHeight: 5}
++	first, err := scanAnnouncements(context.Background(), request, 5, get, [32]byte{1}, [32]byte{2}, noAnnouncementMatches)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if first.OutputsScanned != announcementMaxOutputs || first.Cursor.Height != 5 || first.Cursor.OutputIndex != announcementMaxOutputs || len(first.Blocks) != 1 {
++		t.Fatalf("unbounded or nonprogressing scan: %+v", first)
++	}
++	request.Cursor = first.Cursor
++	request.ExpectedHash = first.Blocks[0].Hash
++	second, err := scanAnnouncements(context.Background(), request, 5, get, [32]byte{1}, [32]byte{2}, noAnnouncementMatches)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if second.OutputsScanned != 88 || second.Cursor.Height != 6 || second.Blocks[0].Hash != request.ExpectedHash {
++		t.Fatalf("resume skipped or repeated outputs: %+v", second)
++	}
++	request.Cursor = announcementCursor{Height: 5, OutputIndex: 512}
++	request.ExpectedHash = strings.Repeat("0", 64)
++	if _, err = scanAnnouncements(context.Background(), request, 5, get, [32]byte{1}, [32]byte{2}, noAnnouncementMatches); !errors.Is(err, errAnnouncementReorg) {
++		t.Fatalf("reorg was not detected: %v", err)
++	}
++}
++
++func TestAnnouncementCandidateSpamHasCursor(t *testing.T) {
++	secret := [32]byte{1}
++	memo := make([]byte, 122)
++	copy(memo, []byte("BNAU"))
++	tx := &Transaction{Outputs: make([]TxOutput, 20)}
++	for i := range tx.Outputs {
++		encrypted, err := wallet.EncryptMemo(memo, secret, i)
++		if err != nil {
++			t.Fatal(err)
++		}
++		tx.Outputs[i].EncryptedMemo = encrypted
++	}
++	block := &Block{Header: BlockHeader{Height: 5}, Transactions: []*Transaction{tx}}
++	matcher := func(_, _, _ [32]byte, pubs [][32]byte, _ []uint32, _ uint32) ([]bool, [][32]byte, error) {
++		matched, secrets := make([]bool, len(pubs)), make([][32]byte, len(pubs))
++		for i := range matched {
++			matched[i] = true
++			secrets[i] = secret
++		}
++		return matched, secrets, nil
++	}
++	response, err := scanAnnouncements(context.Background(), announcementScanRequest{Cursor: announcementCursor{Height: 5}, ThroughHeight: 5}, 5,
++		func(h uint64) *Block { return block }, [32]byte{1}, [32]byte{2}, matcher)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(response.Blocks) != 1 || len(response.Blocks[0].Candidates) != announcementMaxCandidates ||
++		response.Cursor.OutputIndex != announcementMaxCandidates || response.OutputsScanned != announcementMaxCandidates {
++		t.Fatalf("spam limit did not preserve progress: %+v", response)
++	}
++	for _, candidate := range response.Blocks[0].Candidates {
++		if len(candidate) != 244 {
++			t.Fatal("candidate length", len(candidate))
++		}
++	}
++}
++
++func TestAnnouncementDerivationModes(t *testing.T) {
++	h := params.IndexedDerivationHeight
++	if announcementDerivationMode(h-1, false) != 0 || announcementDerivationMode(h, false) != 2 ||
++		announcementDerivationMode(h+127, false) != 2 || announcementDerivationMode(h+128, false) != 1 ||
++		announcementDerivationMode(h+128, true) != 0 {
++		t.Fatal(fmt.Sprintf("wrong derivation boundary at %d", h))
++	}
++}
++
++func TestAnnouncementStealthMatchingAcrossActivation(t *testing.T) {
++	spendPriv, viewPriv, txPriv := [32]byte{1}, [32]byte{2}, [32]byte{3}
++	spendPub, err := ScalarToPubKey(spendPriv)
++	if err != nil {
++		t.Fatal(err)
++	}
++	txPub, err := ScalarToPubKey(txPriv)
++	if err != nil {
++		t.Fatal(err)
++	}
++	memo := make([]byte, 122)
++	copy(memo, []byte("BNAU"))
++	for _, height := range []uint64{params.IndexedDerivationHeight - 1, params.IndexedDerivationHeight, params.IndexedDerivationHeight + 128} {
++		secret := [32]byte{}
++		if height < params.IndexedDerivationHeight {
++			secret, err = DeriveStealthSecret(txPub, viewPriv)
++		} else {
++			secret, err = DeriveStealthSecretIndexed(txPub, viewPriv, 0)
++		}
++		if err != nil {
++			t.Fatal(err)
++		}
++		point, err := ScalarToPubKey(secret)
++		if err != nil {
++			t.Fatal(err)
++		}
++		outputPub, err := CommitmentAdd(point, spendPub)
++		if err != nil {
++			t.Fatal(err)
++		}
++		encrypted, err := wallet.EncryptMemo(memo, secret, 0)
++		if err != nil {
++			t.Fatal(err)
++		}
++		block := &Block{Header: BlockHeader{Height: height}, Transactions: []*Transaction{
++			{Outputs: []TxOutput{}},
++			{TxPublicKey: txPub, Outputs: []TxOutput{{PublicKey: outputPub, EncryptedMemo: encrypted}}},
++		}}
++		response, err := scanAnnouncements(context.Background(), announcementScanRequest{Cursor: announcementCursor{Height: height}, ThroughHeight: height}, height,
++			func(uint64) *Block { return block }, viewPriv, spendPub, StealthScanBatch)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if len(response.Blocks) != 1 || len(response.Blocks[0].Candidates) != 1 {
++			t.Fatalf("height %d did not match announcement channel: %+v", height, response)
++		}
++	}
++}
+diff --git a/api_routes.go b/api_routes.go
+index 9c77840..83b862f 100644
+--- a/api_routes.go
++++ b/api_routes.go
+@@ -21,6 +21,7 @@ func (s *APIServer) registerPublicRoutes(mux *http.ServeMux) {
+ // registerPrivateRoutes adds wallet, mining, and control endpoints.
+ // Only registered for --api (always behind auth).
+ func (s *APIServer) registerPrivateRoutes(mux *http.ServeMux) {
++	mux.HandleFunc("POST /api/updates/scan", s.handleAnnouncementScan)
+ 	// Wallet
+ 	mux.HandleFunc("POST /api/wallet/load", s.handleLoadWallet)
+ 	mux.HandleFunc("POST /api/wallet/create", s.handleCreateWallet)

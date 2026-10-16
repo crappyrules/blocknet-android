@@ -13,6 +13,8 @@ public final class WalletRepository {
     private final Context context;
     private final NativeRuntime runtime;
     private final WalletApi api;
+    private final OfflineSnapshotStore offline;
+    private final OfflineWalletReader offlineReader;
     private JSONObject preview;
     private String previewWallet, previewNetwork, previewMemo;
     private long previewAt;
@@ -24,6 +26,7 @@ public final class WalletRepository {
     public WalletRepository(Context context) {
         this.context = context.getApplicationContext();
         runtime = NativeRuntime.get(context); api = new WalletApi(runtime);
+        offline = new OfflineSnapshotStore(this.context); offlineReader=new OfflineWalletReader(this.context);
     }
     public static final class Snapshot {
         public boolean running, loaded, locked, viewOnly, syncing, scanning;
@@ -32,6 +35,8 @@ public final class WalletRepository {
         public long checkpointHeight, syncTarget;
         public boolean checkpointFastSync;
         public boolean syncRequested, syncAllowed, allowMobileData;
+        public boolean cached, cacheAvailable, localWalletAvailable, chainHeightKnown=true;
+        public long savedAt;
         public String connectionLabel = "", syncPolicyMessage = "";
         public String checkpointWarning = "", syncPercent = "";
         public String address = "", network = "mainnet", nodeMessage = "Node stopped";
@@ -46,9 +51,12 @@ public final class WalletRepository {
         s.syncRequested = runtime.syncRequested();
         s.network = network(); s.running = runtime.alive(); s.nodeMessage = runtime.message();
         long refreshGeneration=runtime.generation();String refreshWallet=activeWallet();
-        if (!s.running) return s;
+        String scope = cacheScope(s.network,refreshWallet);
+        s.localWalletAvailable=hasLocalWallet(s.network,refreshWallet);
+        s.cacheAvailable = hasOfflineView(s.network,refreshWallet);
+        if (!s.running || !connection.allowed) { applyOfflineView(s,scope); return s; }
         try { s.status = api.get("/api/status"); }
-        catch (Exception e) { s.nodeMessage = "Starting node: " + e.getMessage(); return s; }
+        catch (Exception e) { s.nodeMessage = "Starting node: " + e.getMessage(); applyOfflineView(s,scope); return s; }
         s.nodeMessage = "Local node running";
         s.height = s.status.optLong("chain_height"); s.peers = s.status.optInt("peers"); s.syncing = s.status.optBoolean("syncing");
         s.syncTarget = s.status.optLong("sync_target"); s.syncPercent = s.status.optString("sync_percent");
@@ -77,11 +85,99 @@ public final class WalletRepository {
             if (s.history == null) s.history = new JSONArray(); if (s.sends == null) s.sends = new JSONArray();
             if(refreshGeneration==runtime.generation()&&s.network.equals(network())&&refreshWallet.equals(activeWallet())&&!hasIncompleteWalletChange())
                 TransactionNotifier.rememberWallet(context,s.network,refreshWallet,s.address);
+            if (!s.address.isEmpty() && !hasIncompleteWalletChange() && refreshGeneration==runtime.generation()
+                && s.network.equals(network()) && refreshWallet.equals(activeWallet()) && runtime.alive()
+                && SyncNetworkPolicy.read(context).allowed) {
+                try { offline.save(scope,cacheJson(scope,s,WalletFileBinding.digest(walletFile(refreshWallet)))); s.cacheAvailable=true; }
+                catch (Exception ignored) { s.cacheAvailable=offline.has(scope); }
+            }
         } catch (WalletApi.ApiException e) {
             if (e.status == 403 || e.status == 409) { s.loaded = true; s.locked = true; }
             else if (e.status != 503) throw e;
+        } catch (Exception e) {
+            if (runtime.alive() && SyncNetworkPolicy.read(context).allowed) throw e;
+            s.loaded=false; s.locked=false; s.scanning=false; s.spendable=s.pending=0;
+            s.address=""; s.history=new JSONArray(); s.sends=new JSONArray();
+            applyOfflineView(s,scope); return s;
         }
+        if (!s.loaded || s.locked) applyOfflineView(s,scope);
         return s;
+    }
+    private static String cacheScope(String network,String wallet) { return network + "/" + wallet; }
+    private void authorizeCache(String wallet,String password) {
+        try {
+            boolean oldCacheInvalidated=offline.authorizeOnline(cacheScope(network(),wallet),password);
+            if (oldCacheInvalidated) try { new BiometricVault(context).disable(network(),wallet); }
+            catch (Exception ignored) { /* The old cached view is already invalidated. */ }
+        } catch (Exception ignored) { OfflineSnapshotStore.lock(); }
+    }
+    public boolean hasOfflineView(String network,String wallet) {
+        return hasLocalWallet(network,wallet)&&offline.has(cacheScope(network,wallet));
+    }
+    public boolean hasLocalWallet(String network,String wallet) {
+        return network.equals(this.network())&&new File(runtime.walletsDir(),wallet).isFile()&&!hasIncompleteWalletChange();
+    }
+    private File walletFile(String wallet) { return new File(runtime.walletsDir(),wallet); }
+    private boolean cacheMatchesWallet(String wallet,JSONObject saved) throws Exception {
+        return WalletFileBinding.matches(saved.optString("walletDigest"),WalletFileBinding.digest(walletFile(wallet)));
+    }
+    private void unlockSavedOrFile(String wallet,String password) throws Exception {
+        String scope=cacheScope(network(),wallet);
+        if(hasOfflineView(network(),wallet)) {
+            try {
+                JSONObject saved=offline.unlockOffline(scope,password);
+                if(cacheMatchesWallet(wallet,saved))return;
+            } catch(Exception invalidOrChanged) {
+                // The current encrypted wallet file is the authority for this password.
+            }
+            OfflineSnapshotStore.lock();
+        }
+        openLocalSavedView(wallet,password);
+    }
+    private void openLocalSavedView(String wallet,String password) throws Exception {
+        if(runtime.alive()&&!SyncNetworkPolicy.read(context).allowed){runtime.signalNetworkPause();runtime.stop();}
+        String before=WalletFileBinding.digest(walletFile(wallet));
+        JSONObject saved=offlineReader.read(wallet,password);
+        String after=WalletFileBinding.digest(walletFile(wallet));
+        if(!before.equals(after))throw new IOException("Wallet file changed while opening it. Try again.");
+        String scope=cacheScope(network(),wallet);
+        boolean invalidated=offline.authorizeOnline(scope,password);
+        if(invalidated)try{new BiometricVault(context).disable(network(),wallet);}catch(Exception ignored){}
+        try{saved.put("scope",scope).put("walletDigest",after);offline.save(scope,saved);}
+        catch(Exception failure){OfflineSnapshotStore.lock();throw failure;}
+    }
+    public boolean offlineSessionAuthorized(){return OfflineSnapshotStore.authorized(cacheScope(network(),activeWallet()));}
+    private static JSONObject cacheJson(String scope,Snapshot s,String walletDigest) throws Exception {
+        return new JSONObject().put("scope",scope).put("savedAt",System.currentTimeMillis())
+            .put("walletDigest",walletDigest)
+            .put("spendable",s.spendable).put("pending",s.pending).put("height",s.height)
+            .put("walletHeight",s.walletHeight).put("chainHeightKnown",true)
+            .put("viewOnly",s.viewOnly).put("address",s.address)
+            .put("history",s.history).put("sends",s.sends);
+    }
+    private void applyOfflineView(Snapshot s,String scope) {
+        if (!s.cacheAvailable) return;
+        if (!OfflineSnapshotStore.authorized(scope)) { s.loaded=true; s.locked=true; return; }
+        try {
+            JSONObject saved=offline.read(scope);
+            if (saved==null) { s.loaded=true; s.locked=true; return; }
+            if(!cacheMatchesWallet(activeWallet(),saved)) {
+                OfflineSnapshotStore.lock(); s.cacheAvailable=false;
+                s.loaded=true; s.locked=true;
+                s.nodeMessage="Wallet file changed. Unlock with its current password.";
+                return;
+            }
+            s.loaded=true; s.locked=false; s.cached=true; s.savedAt=saved.getLong("savedAt");
+            s.spendable=saved.getLong("spendable"); s.pending=saved.getLong("pending");
+            s.height=saved.getLong("height"); s.walletHeight=saved.getLong("walletHeight");
+            s.chainHeightKnown=saved.optBoolean("chainHeightKnown",true);
+            s.viewOnly=saved.getBoolean("viewOnly"); s.address=saved.getString("address");
+            s.history=saved.getJSONArray("history"); s.sends=saved.getJSONArray("sends");
+        } catch (Exception invalid) {
+            OfflineSnapshotStore.lock();
+            s.loaded=true; s.locked=true;
+            s.nodeMessage="Saved view could not be opened. Unlock the wallet again to refresh it.";
+        }
     }
     public void startNode() { context.startForegroundService(new Intent(context, CoreService.class).setAction(CoreService.START)); }
     public synchronized void setAllowMobileData(boolean allow) throws Exception {
@@ -100,7 +196,7 @@ public final class WalletRepository {
         if (!network.equals("mainnet") && !network.equals("testnet")) throw new IllegalArgumentException("Choose mainnet or testnet");
         if (hasPendingSend()) throw new IOException("Resolve the pending transaction before changing networks");
         if (network.equals(network())) return;
-        boolean restart = runtime.alive(); stopNode();
+        boolean restart = runtime.alive(); stopNode(); OfflineSnapshotStore.lock();
         if (!runtime.prefs.edit().putString("network", network).commit()) throw new IOException("Could not save network");
         if (restart) startNode();
     }
@@ -195,6 +291,7 @@ public final class WalletRepository {
             if(!file.equals(opened.getString("filename")))throw new IOException("The core opened an unexpected wallet file");
             activate(file);
             if(!runtime.prefs.edit().remove(walletChangeKey()).commit())throw new IOException("Could not confirm wallet selection");
+            authorizeCache(file,body.getString("password"));
         }catch(Exception failure){
             // The durable marker stays until a successful, explicit reopen reconciles it.
             try{stopNode();}catch(Exception stopFailure){failure.addSuppressed(stopFailure);}
@@ -220,6 +317,11 @@ public final class WalletRepository {
         if (hasPendingSend()) throw new IOException("Resolve the pending transaction before switching wallets");
         String file = filename(name);
         if (!new File(runtime.walletsDir(),file).isFile()) throw new IOException("Wallet file does not exist");
+        if (!runtime.alive() || !SyncNetworkPolicy.read(context).allowed) {
+            unlockSavedOrFile(file,password);
+            if (!runtime.prefs.edit().putString("active."+network(),file).commit()) { OfflineSnapshotStore.lock(); throw new IOException("Could not save active wallet"); }
+            preview=null; return;
+        }
         openWallet(file,"/api/wallet/load",new JSONObject().put("filepath",file).put("password",password));
     }
     public synchronized void unload() throws Exception {
@@ -227,12 +329,17 @@ public final class WalletRepository {
         makeRoom();
     }
     public synchronized void unlock(String password) throws Exception {
+        if (!runtime.alive() || !SyncNetworkPolicy.read(context).allowed) {
+            unlockSavedOrFile(activeWallet(),password);
+            return;
+        }
         if(hasIncompleteWalletChange()) { switchWallet(activeWallet(),password);return; }
         try { api.post("/api/wallet/unlock", new JSONObject().put("password",password)); }
         catch (WalletApi.ApiException e) {
             if (e.status != 503) throw e;
             api.post("/api/wallet/load", new JSONObject().put("password",password).put("filepath",activeWallet()));
         }
+        authorizeCache(activeWallet(),password);
     }
     public synchronized void unlockBiometric(String expectedNetwork,String wallet,char[] password) throws Exception {
         try {
@@ -243,7 +350,7 @@ public final class WalletRepository {
             else switchWallet(file,new String(password));
         } finally { Arrays.fill(password,'\0'); }
     }
-    public synchronized void lock() throws Exception { preview = null; if (runtime.alive()) api.post("/api/wallet/lock",null); }
+    public synchronized void lock() throws Exception { preview = null; OfflineSnapshotStore.lock(); if (runtime.alive()) api.post("/api/wallet/lock",null); }
     public String seed(String password) throws Exception { requireKnownWallet(); return api.post("/api/wallet/seed",new JSONObject().put("password",password)).getString("mnemonic"); }
     public void rescan() throws Exception { requireKnownWallet(); api.post("/api/wallet/sync",null); }
     public JSONObject sign(String message) throws Exception { requireKnownWallet(); return api.post("/api/wallet/sign",new JSONObject().put("message",message)); }

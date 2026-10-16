@@ -14,6 +14,7 @@ public final class CoreService extends Service {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService downloads = Executors.newSingleThreadExecutor();
     private final ScheduledExecutorService alerts = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService announcements = Executors.newSingleThreadScheduledExecutor();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private volatile boolean stopping;
     private volatile long ownedGeneration = -1;
@@ -39,6 +40,8 @@ public final class CoreService extends Service {
         else registerReceiver(screen, new IntentFilter(Intent.ACTION_SCREEN_OFF));
         TransactionNotifier notifier=new TransactionNotifier(this);
         alerts.scheduleWithFixedDelay(notifier::poll,4,15,TimeUnit.SECONDS);
+        AnnouncementScanner scanner=new AnnouncementScanner(this);
+        announcements.scheduleWithFixedDelay(scanner::poll,20,60,TimeUnit.SECONDS);
         connectivity = getSystemService(ConnectivityManager.class);
         if (connectivity != null) try { connectivity.registerDefaultNetworkCallback(network, handler); observing = true; } catch (Exception ignored) { }
     }
@@ -123,6 +126,6 @@ public final class CoreService extends Service {
         r.cancelCheckpointRefresh();
         r.clearSyncRequest(this);
         worker.execute(() -> { long owned = ownedGeneration; try { if (owned >= 0) r.stopServiceGeneration(this,owned); } catch (Exception ignored) { } });
-        worker.shutdown(); downloads.shutdownNow(); alerts.shutdownNow(); super.onDestroy();
+        worker.shutdown(); downloads.shutdownNow(); alerts.shutdownNow(); announcements.shutdownNow(); super.onDestroy();
     }
 }

@@ -11,6 +11,18 @@
 
 Native Android wallet for Blocknet mainnet, using Blocknet Core and Mantle.
 
+> [!CAUTION]
+> **Existing preview wallet? Verify recovery before changing APKs.** Earlier
+> preview APKs used disposable signing certificates. Android cannot install an
+> APK signed with the new owner certificate over one of those builds. **Do not
+> uninstall your current wallet or clear its app data to make an update work.**
+> First verify that you can restore on a separate device or Android profile.
+> Phrase-created wallets need the recovery phrase. Wallets imported from
+> spend/view keys have **no recovery phrase**; keep the original keys or an
+> encrypted wallet backup **and its password**. Losing every usable recovery
+> copy can permanently lose access to your coins. Read the
+> [migration warning](android/docs/OWNER_RELEASE_NOTES.md) before installing.
+
 <p align="center"><a href="https://github.com/crappyrules/blocknet-android/releases"><strong>Download the Android preview APK →</strong></a></p>
 
 ## Private money. Native experience.
@@ -61,23 +73,21 @@ The `android-test` directory contains the supplied ARM64 build inputs.
 
 [Build Android APK](https://github.com/crappyrules/blocknet-android/actions/workflows/android.yml)
 runs on pushes to `master`, pull requests, version tags, and manual **Run workflow** requests.
-Each run tests, lints, builds and verifies two ARM64 APKs:
+The ordinary run tests, lints, builds and verifies two ARM64 debug APK variants:
 
-- **activity**: rebuilds the pinned Core source with the reviewed activity patches;
-  supports transaction alerts while a loaded wallet is locked.
-- **supplied**: packages the original supplied Core unchanged as a compatibility fallback.
+- **activity**: rebuilds the pinned Core source with the reviewed activity and
+  signed announcement patches; supports transaction alerts while a loaded
+  wallet is locked.
+- **supplied**: packages the original supplied Core unchanged as a compatibility
+  fallback.
 
-Open a successful run and download its APK artifact under **Artifacts**. Each includes
-the APK and `SHA256SUMS`; the activity variant also includes build provenance.
-These are debug APKs signed with the runner's disposable Android debug key.
-They are suitable for testing, and may require uninstalling an APK signed by a different
-key. Export an encrypted wallet backup before uninstalling. Stable release signing
-requires a separately configured signing key; no private signing key is in this repository.
-
-Version tags (`v*`) publish both verified APK variants, combined checksums and Core build
-provenance to a GitHub **preview release** after both build jobs succeed. Release assets
-remain available after the CI artifact retention period. See the [release notes](android/docs/RELEASE_NOTES.md)
-for installation and signing details.
+Open a successful run and download the desired APK artifact under **Artifacts**.
+Each includes a debug APK, checksum and build provenance. CI debug APKs use disposable signing
+keys and are only for testing. A version tag does **not** publish a release.
+Owner signing and publication are separate manual jobs protected by GitHub
+environment approvals and tag checks. No private signing key is in this repository.
+See the [release process](android/docs/CI_RELEASE.md) and
+[migration warning](android/docs/OWNER_RELEASE_NOTES.md) before using an APK.
 
 CI does not run a node, access wallets, or perform funded transactions. Device acceptance
 results and remaining physical checks are documented in `android/docs/ACCEPTANCE.md`.

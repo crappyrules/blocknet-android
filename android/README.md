@@ -1,30 +1,47 @@
 # Blocknet native Android wallet
 
+> [!CAUTION]
+> **BACK UP AND VERIFY RECOVERY BEFORE ANY UPGRADE.** Published preview APKs used
+> different disposable signing certificates. Android rejects an in-place
+> replacement signed with another certificate. **Do not uninstall the existing
+> wallet or clear its app data** until you have restored, unlocked and checked
+> its receive address on a separate device or Android profile. Wallets created
+> from a recovery phrase can use that
+> phrase; wallets imported from spend/view keys have **no recovery phrase** and
+> need the original keys or an encrypted wallet backup **and its password**.
+> If every usable recovery copy is lost, access to the coins can be lost
+> permanently. No new public release is approved while signing and phone
+> migration checks are unresolved.
+
 This is the standalone native Android application. The desktop Tauri application remains at the repository root. The app uses Android Views and Java 17, with Blocknet Core running as a child process of a foreground Android service. Mantle is bundled alongside the core. There is no Termux dependency.
 
 ## Build
 
-Requirements: JDK 17 with `javac`, Android SDK platform 36 and build tools, Python 3 and the SDK’s `aapt2` for packaged payload/resource verification. Set `ANDROID_HOME` or create an ignored `local.properties` containing `sdk.dir=/absolute/path/to/android-sdk`.
+Requirements: JDK 17 with `javac`, Android SDK platform 36 and build tools, Python 3, Go 1.26.5 or newer, a checkout of Core at `5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e`, and the SDK’s `aapt2` for packaged payload/resource verification. Set `ANDROID_HOME` or create an ignored `local.properties` containing `sdk.dir=/absolute/path/to/android-sdk`.
 
 ```sh
 cd android
-./gradlew assembleDebug testDebugUnitTest lintDebug
-python3 scripts/verify-apk.py
+scripts/build-offline-wallet-view.sh /absolute/path/to/pinned-core /absolute/new/helper-build
+./gradlew -PofflineWalletViewDir=/absolute/new/helper-build assembleDebug testDebugUnitTest lintDebug
+python3 scripts/verify-apk.py --offline-wallet-view-dir /absolute/new/helper-build
 ```
 
-Or run `scripts/check.sh` to perform those checks together. The debug APK is `app/build/outputs/apk/debug/app-debug.apk`. Install it on an **ARM64 Android 8.0 or newer** phone:
+Or run `scripts/check.sh /absolute/new/helper-build` to perform the Gradle and APK checks together. Existing emulator/device test scripts take `OFFLINE_WALLET_VIEW_DIR=/absolute/new/helper-build`. The debug APK is `app/build/outputs/apk/debug/app-debug.apk`. Install it on an **ARM64 Android 8.0 or newer** phone:
 
 ```sh
 adb -s PHYSICAL_ADB_SERIAL install --user 0 -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The debug build is for development. A distributable release needs an owner-controlled signing key configured outside source control. Never commit signing keys, passwords or wallet backups.
+The debug build is for development. Its local signing certificate does not match
+the published preview APKs and cannot update those installations in place. A
+distributable release needs an owner-controlled signing key configured outside
+source control. Never commit signing keys, passwords or wallet backups.
 
 ## Supplied native executables
 
 The build stages the original `../android-test/android-test/blocknet` (Mantle v1.2.0) and `blocknet-core-arm64-android` (Core v0.22.0) as `lib/arm64-v8a/libmantle.so` and `libblocknet_core.so`. The `.so` suffix tells Android's package installer to extract them into the executable native library directory; they remain executable programs. The app invokes their absolute paths instead of loading them as libraries.
 
-`extractNativeLibs`, legacy JNI packaging and `keepDebugSymbols` preserve the payload and make execution compatible with Android's restriction on launching executables from writable app storage. `verify-apk.py` compares both packaged programs byte for byte with the supplied originals and prints their SHA-256 hashes. It also verifies the bundled mainnet checkpoint asset against its packaged provenance (source, SHA-256, count and maximum height), plus compiled adaptive launcher resources and the manifest icon mappings. It locates `aapt2` through `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `local.properties` or PATH; an explicit `--aapt2` path is supported. Default builds do not download, upgrade, patch or replace either program. An explicitly selected experimental Core build is described below.
+`extractNativeLibs`, legacy JNI packaging and `keepDebugSymbols` preserve the payload and make execution compatible with Android's restriction on launching executables from writable app storage. `verify-apk.py` compares both packaged programs byte for byte with the supplied originals and checks the separately built, read-only offline wallet helper against its pinned source and provenance. It also verifies the bundled mainnet checkpoint asset against its packaged provenance (source, SHA-256, count and maximum height), plus compiled adaptive launcher resources and the manifest icon mappings. It locates `aapt2` through `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `local.properties` or PATH; an explicit `--aapt2` path is supported. Default builds do not download, upgrade, patch or replace the supplied Core or Mantle. An explicitly selected experimental Core build is described below.
 
 App-private storage holds node data and wallet files. Android backup is disabled. The local API uses loopback only; network security configuration permits cleartext HTTP solely for `127.0.0.1` and `localhost`. Node synchronization continues through a visible foreground notification. Camera access is optional and requested for scanning payment QR codes.
 
@@ -38,9 +55,9 @@ Physical acceptance still needs camera scanning/permission denial, background an
 
 On 2026-10-15, `assembleDebug`, `assembleDebugAndroidTest`, `testDebugUnitTest` and `lintDebug` passed with JDK 17, API 36 and Gradle 8.13. The APK payload check confirmed both native programs match the supplied originals exactly. The API 30 x86 emulator successfully installed the ARM64 APK with an explicit ABI override and rendered the native Android interface; screenshot protection remained enabled.
 
-The latest host gate passes 45 unit tests, including biometric scope/encoding validation, sync network decisions, checkpoint validation and legacy/versioned encrypted backup envelope checks. All 60 emulator smoke checks pass, covering startup readiness redraw, history pagination invalidation when new transactions arrive, confirmation/status refresh, recovery/configuration controls, and payment links that cannot start the node or submit a payment. These checks use synthetic history and no funds.
+The latest host gate passes 68 unit tests, including biometric scope/encoding validation, sync network decisions, checkpoint validation, offline file binding, signed announcement parsing, pending manifest retries, manifest scope, and legacy/versioned encrypted backup envelope checks. All 60 emulator smoke checks pass, covering startup readiness redraw, history pagination invalidation when new transactions arrive, confirmation/status refresh, recovery/configuration controls, and payment links that cannot start the node or submit a payment. These checks use synthetic history and no funds.
 
-Nine additional emulator checks inject an activation failure through an in-process loopback API stub, confirm that the durable wallet identity marker blocks backup and sending, then confirm a successful activation clears it. They start no Core process and create no wallets or transactions. Build the optional test runner with `./gradlew -PidentityIntegration assembleDebug assembleDebugAndroidTest`, install its app and test APKs on an emulator, then run `adb -s EMULATOR_SERIAL shell am instrument -w com.blocknet.wallet.test/com.blocknet.wallet.WalletIdentityInstrumentation`.
+Nine additional emulator checks inject an activation failure through an in-process loopback API stub, confirm that the durable wallet identity marker blocks backup and sending, then confirm a successful activation clears it. They start no Core process and create no wallets or transactions. Build the optional test runner with `./gradlew -PofflineWalletViewDir=/absolute/new/helper-build -PidentityIntegration assembleDebug assembleDebugAndroidTest`, install its app and test APKs on an emulator, then run `adb -s EMULATOR_SERIAL shell am instrument -w com.blocknet.wallet.test/com.blocknet.wallet.WalletIdentityInstrumentation`.
 
 The `overview.png`, `receive.png` and `settings.png` screenshots in `screenshots/` are **design fixtures with synthetic wallet data**, clearly watermarked by the instrumentation test. They demonstrate layout and QR rendering, not live balances, synchronization or payment execution. `onboarding.png` shows the actual stopped app. The optional exact ARM core harness is documented in [scripts/ARM_CORE_TESTING.md](scripts/ARM_CORE_TESTING.md).
 
@@ -64,7 +81,29 @@ The native interface follows [blocknetcrypto.com](https://blocknetcrypto.com/): 
 
 **Node settings → Allow mobile data for sync** is available before opening a wallet; the same switch is in wallet Settings. It defaults to **off (Wi-Fi only)**. Turning it on also permits mobile data. The app shows the current default connection and monitors Android network changes, including when the wallet is in the background. It checks the active route's Wi-Fi/mobile transport and internet validation, rather than treating any nearby or connected Wi-Fi as the route in use. VPNs are accepted in Wi-Fi-only mode only when Android reports Wi-Fi without cellular underneath; unknown VPN routes wait for a verifiable connection.
 
-When a requested sync loses an allowed connection, the foreground service signals the owned Core to shut down, confirms it exits, and waits with a visible paused notification. It automatically starts Core when a permitted connection returns. Core starts with the wallet locked/unloaded, so open it again with the wallet password. Stop sync cancels the waiting session. The supplied unmodified Core has no separate networking pause or offline flag, so local Core wallet operations also become unavailable while it is stopped. Graceful shutdown may take several seconds; this preference is not an operating-system firewall or a guarantee of zero bytes during network handover.
+When a requested sync loses an allowed connection, the foreground service signals the owned Core to shut down, confirms it exits, and waits with a visible paused notification. It automatically starts Core when a permitted connection returns. Stop sync cancels the waiting session. The supplied unmodified Core has no separate networking pause or offline flag, so it cannot safely run on disallowed cellular. Graceful shutdown may take several seconds; this preference is not an operating-system firewall or a guarantee of zero bytes during network handover.
+
+An existing wallet file can be opened without a previously saved app snapshot. A separate short-lived helper built from the pinned Core wallet package authenticates the password and reads only saved display fields without starting DNS, P2P, a listener, sync, or broadcasting. The password passes through a private stdin pipe, not command arguments. Unsupported wallet formats and wrong passwords fail closed. The supplied Core binary has unavailable dirty source changes, so real installed-wallet compatibility still requires physical-device acceptance.
+
+After a successful wallet unlock, the app saves an encrypted view of that wallet's balance, address, saved height, and recent activity in private app storage. If the node is paused or unavailable, a cold launch offers password or enrolled biometric unlock without requiring Wi-Fi or mobile data. The view is explicitly dated using the wallet file's modification time or the last live snapshot time and may be stale; sending, shortname verification, chain refresh, and other node operations require reconnecting and unlocking the node. A fresh install with no wallet file shows no invented balance. The saved view uses Argon2id password derivation and authenticated encryption, is scoped to the selected wallet and network, and its in-memory key is cleared when the app leaves the screen or the wallet locks. It never stores spending keys or recovery words.
+
+### Software update checks
+
+Builds without a configured on-chain announcement channel check the public [Blocknet Android GitHub releases](https://github.com/crappyrules/blocknet-android/releases) approximately once per day while installed and active, with a periodic Android job and a check when the app next opens. These legacy listings are labeled **unverified**. Requests use the same validated default-network policy as sync and are bound to the permitted Android `Network`: Wi-Fi-only mode never starts a GitHub request over cellular. Offline checks defer until a permitted connection is available; failed requests back off for six hours. Only the check time, release tag, notes and official release-page URL are saved locally. No wallet data or credentials are sent.
+
+When the owner configures the [signed on-chain update channel](docs/ONCHAIN_UPDATES.md), the app suppresses legacy GitHub polling and cached GitHub notices. Its background worker scans current mainnet blocks over a permitted connection, persists signed candidates with the cursor, and retries unavailable manifests without blocking later notices. A full pending inbox pauses cursor progress; corrupted inbox storage triggers a replay from the configured birth height without resetting the finalized sequence floor. Settings can request a bounded scan. The signed memo authenticates the announcement and manifest; opening the official release page does **not** authenticate the APK found there.
+
+The update action opens a confirmed browser handoff to the exact official repository release page after checking that the release has this build's expected APK variant. It does **not** download, authenticate, or install an APK inside the wallet. The published preview variants have different signing certificates and cannot be replaced by a differently signed APK. Tag pushes cannot publish from the prepared workflow; manual release publication remains gated while a safe migration procedure is unresolved. The prepared successor is `v1.0.0-preview.2` with `versionCode` 2; before publication, its package, certificate, APK checksum, and migration route must be verified.
+
+### Release signing gate
+
+The [GitHub Actions owner-signing handoff](docs/CI_RELEASE.md) describes the
+manual protected signing job, required environment setup, and separate
+publication gate. Normal CI and tag pushes upload debug test artifacts only.
+
+`assembleRelease` requires the owner to supply `BLOCKNET_RELEASE_KEYSTORE` (an absolute path outside source control), `BLOCKNET_RELEASE_STORE_PASSWORD`, `BLOCKNET_RELEASE_KEY_ALIAS`, `BLOCKNET_RELEASE_KEY_PASSWORD`, and `BLOCKNET_RELEASE_CERT_SHA256`. Gradle checks that the selected alias exists and its certificate matches the pinned SHA-256 before it can package a release. Missing or mismatched values fail the build; a release build never uses a disposable debug key. Normal CI receives none of the owner secrets. The proposed manual CI signing job would receive them only from its protected environment. Do not put them in Git, command-line arguments, logs, or artifacts. The local script prompts for the keystore passphrase; this configuration does not recover the signing keys used for the published previews.
+
+The owner Ed25519 announcement signer, Android release keystore, and dedicated mainnet announcement channel were generated locally outside Git. The signer's public key, deliberately public channel view key, channel spend public key, channel birth height, and release certificate are pinned in `app/build.gradle`; the release certificate SHA-256 is `4a307e802e3504f7850c546ab8b38c292211ea5d5c5be3342107edaec1255fff`. The channel spend private key is outside Git. The local owner signing script reads the channel's public config and prompts for the keystore passphrase in a terminal. A local owner-signed APK has been built and verified; channel broadcast, publication, and safe migration remain pending. None is authorized by this source configuration alone.
 
 Checkpoint downloads follow the same preference and use `Network.openConnection` on the checked network so a Wi-Fi download cannot silently fall back to cellular. A connection change or Stop cancels the active download; the last validated checkpoint file is retained.
 
@@ -133,8 +172,8 @@ An additive locked-wallet activity API candidate can be selected explicitly with
 
 ```sh
 cd android
-./gradlew -PcoreActivityDir=/absolute/path/to/reviewed-build assembleDebug testDebugUnitTest lintDebug
-python3 scripts/verify-apk.py --core-activity-dir /absolute/path/to/reviewed-build
+./gradlew -PofflineWalletViewDir=/absolute/new/helper-build -PcoreActivityDir=/absolute/path/to/reviewed-build assembleDebug testDebugUnitTest lintDebug
+python3 scripts/verify-apk.py --offline-wallet-view-dir /absolute/new/helper-build --core-activity-dir /absolute/path/to/reviewed-build
 ```
 
 The source build is recorded as experimental because the supplied binary includes an unavailable dirty source diff. The selected candidate passed nine ARM64 cryptography/activity tests and six synthetic funded-send/idempotency tests on the Galaxy S22, plus 25 offline original/candidate recovery, signature and encrypted-wallet round-trip checks. The Android client passed 24 real loopback activity checks and 60 API 36 UI smoke checks. Changed candidates require these compatibility checks before activation. It is not a byte-identical recreation of the original dirty build. Build prerequisites, the patch contract and source limitations are recorded in `core-patches/README.md` and the candidate's `build-provenance.json`.

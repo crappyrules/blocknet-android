@@ -69,10 +69,21 @@ git -C "$work" apply --check "$android_shim"
 git -C "$work" apply "$android_shim"
 git -C "$work" apply --reverse --check "$android_shim"
 cp -- "$android_shim" "$output_directory/android-cgo-link-flags.patch"
+announcement_patch="$script_root/core-patches/0003-onchain-announcement-scan.patch"
+[[ -r "$announcement_patch" ]]
+git -C "$work" apply --check "$announcement_patch"
+git -C "$work" apply "$announcement_patch"
+git -C "$work" apply --reverse --check "$announcement_patch"
+cp -- "$announcement_patch" "$output_directory/onchain-announcement-scan.patch"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$cc"
 export CC_aarch64_linux_android="$cc" AR_aarch64_linux_android="$toolchain/llvm-ar"
-export CC="$cc" CXX="$cxx" AR="$toolchain/llvm-ar"
 export GOTOOLCHAIN=local
+# Validate the bounded scanner against the pinned source before cross packaging.
+cargo build --manifest-path "$work/crypto-rs/Cargo.toml" --target-dir "$output_directory/host-rust-target" --locked --release
+mkdir -p "$work/crypto-rs/target/release"
+install -m 0644 "$output_directory/host-rust-target/release/libblocknet_crypto.a" "$work/crypto-rs/target/release/libblocknet_crypto.a"
+(cd "$work" && CGO_ENABLED=1 go test -run '^TestAnnouncement' -count=1 .)
+export CC="$cc" CXX="$cxx" AR="$toolchain/llvm-ar"
 cargo build --manifest-path "$work/crypto-rs/Cargo.toml" --target-dir "$output_directory/rust-target" --locked --release --target aarch64-linux-android
 mkdir -p "$work/crypto-rs/target/release"
 install -m 0644 "$output_directory/rust-target/aarch64-linux-android/release/libblocknet_crypto.a" "$work/crypto-rs/target/release/libblocknet_crypto.a"
@@ -92,7 +103,7 @@ sha=lambda path:hashlib.sha256(Path(path).read_bytes()).hexdigest()
 original=Path(os.environ['BLOCKNET_BUILD_ORIGINAL'])
 patch=out/'applied.patch'
 versions={name:subprocess.check_output(command,text=True).strip() for name,command in {'go':['go','version'],'rustc':['rustc','--version'],'cargo':['cargo','--version']}.items()}
-provenance={'experimental':True,'baseline_repository':'https://github.com/blocknetprivacy/core','baseline_commit':os.environ['BLOCKNET_BUILD_BASELINE'],'baseline_export':'git archive of commit; input working-tree modifications excluded','patch_sha256':sha(patch) if patch.exists() else None,'android_link_shim_sha256':sha(out/'android-cgo-link-flags.patch'),'ndk_revision':'30.0.16248370','android_api':int(os.environ['BLOCKNET_BUILD_API']),'versions':versions,'go_flags':'CGO_ENABLED=1 GOOS=android GOARCH=arm64 GOARM64=v8.0 -mod=readonly -trimpath -buildvcs=false -buildmode=pie -ldflags=-s -w -checklinkname=0','cargo_flags':'--locked --release --target aarch64-linux-android','cargo_lock_sha256':sha(out/'Cargo.lock'),'binary_sha256':sha(binary),'original_binary_sha256':sha(original) if original.is_file() else None,'limitation':'Not a byte-identical recreation: supplied binary used Go1.27.0 and unknown dirty source changes. Requires crypto, API and physical Android acceptance before packaging.'}
+provenance={'experimental':True,'baseline_repository':'https://github.com/blocknetprivacy/core','baseline_commit':os.environ['BLOCKNET_BUILD_BASELINE'],'baseline_export':'git archive of commit; input working-tree modifications excluded','patch_sha256':sha(patch) if patch.exists() else None,'android_link_shim_sha256':sha(out/'android-cgo-link-flags.patch'),'announcement_scan_patch_sha256':sha(out/'onchain-announcement-scan.patch'),'ndk_revision':'30.0.16248370','android_api':int(os.environ['BLOCKNET_BUILD_API']),'versions':versions,'go_flags':'CGO_ENABLED=1 GOOS=android GOARCH=arm64 GOARM64=v8.0 -mod=readonly -trimpath -buildvcs=false -buildmode=pie -ldflags=-s -w -checklinkname=0','cargo_flags':'--locked --release --target aarch64-linux-android','cargo_lock_sha256':sha(out/'Cargo.lock'),'binary_sha256':sha(binary),'original_binary_sha256':sha(original) if original.is_file() else None,'limitation':'Not a byte-identical recreation: supplied binary used Go1.27.0 and unknown dirty source changes. Announcement scanning requires channel configuration and physical Android acceptance before use.'}
 (out/'build-provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
 (out/'go-buildinfo.txt').write_text(subprocess.check_output(['go','version','-m',str(binary)],text=True))
 (out/'SHA256SUMS').write_text(provenance['binary_sha256']+'  '+binary.name+'\n')

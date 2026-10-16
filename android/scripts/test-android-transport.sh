@@ -15,7 +15,7 @@ if [[ -z "$target_serial" ]]; then
   target_serial="${available_devices[0]}"
 fi
 [[ "$("$adb_bin" -s "$target_serial" get-state)" = device ]]
-./gradlew -PapiIntegration assembleDebug assembleDebugAndroidTest
+./gradlew -PofflineWalletViewDir="${OFFLINE_WALLET_VIEW_DIR:?Build the pinned offline wallet reader and set OFFLINE_WALLET_VIEW_DIR}" -PapiIntegration assembleDebug assembleDebugAndroidTest
 "$adb_bin" -s "$target_serial" install --abi arm64-v8a -r app/build/outputs/apk/debug/app-debug.apk
 "$adb_bin" -s "$target_serial" install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 "$adb_bin" -s "$target_serial" reverse "tcp:$core_port" "tcp:$core_port"
