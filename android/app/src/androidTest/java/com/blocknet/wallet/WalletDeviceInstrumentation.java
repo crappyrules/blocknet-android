@@ -40,6 +40,7 @@ public final class WalletDeviceInstrumentation extends Instrumentation {
         if(arguments!=null&&"true".equals(arguments.getString("safe-stop-only"))){safeStopOnly();return;}
         if(arguments!=null&&"true".equals(arguments.getString("language-ui-only"))){languageUiOnly();return;}
         if(arguments!=null&&"true".equals(arguments.getString("language-locale-only"))){languageLocaleOnly();return;}
+        if(arguments!=null&&"true".equals(arguments.getString("language-multi-locale-only"))){languageMultiLocaleOnly();return;}
         if(arguments!=null&&"true".equals(arguments.getString("language-return-only"))){languageReturnOnly();return;}
         if(arguments!=null&&"true".equals(arguments.getString("language-loaded-wallet-only"))){languageLoadedWalletOnly();return;}
         if(arguments!=null&&"true".equals(arguments.getString("language-restore-english"))){languageRestoreEnglish();return;}
@@ -309,6 +310,34 @@ public final class WalletDeviceInstrumentation extends Instrumentation {
             +", Simplified Chinese="+(visibleText("Simplified Chinese")!=null)
             +", 简体中文="+(visibleText("简体中文")!=null)+", Cancel="+(visibleText("Cancel")!=null);
     }
+    /** Verifies an explicit English choice discards other configured locales. */
+    private void languageMultiLocaleOnly(){
+        Bundle result=new Bundle();
+        try {
+            android.content.Context context=getTargetContext();
+            check("com.blocknet.wallet.offlinetest".equals(context.getPackageName()),
+                "Multi-locale probe targets only OFFLINETEST");
+            android.content.res.Configuration configuration=
+                new android.content.res.Configuration(context.getResources().getConfiguration());
+            configuration.setLocales(new android.os.LocaleList(java.util.Locale.ENGLISH,
+                java.util.Locale.forLanguageTag("zh-Hans-CN")));
+            android.content.Context dual=context.createConfigurationContext(configuration);
+            android.content.Context selected=AppLanguage.forChoice(dual,AppLanguage.ENGLISH);
+            int cancel=GeneratedTranslations.EXACT.get("Cancel");
+            check(selected!=dual,"Explicit English gets an independent context");
+            check(selected.getResources().getConfiguration().getLocales().size()==1
+                &&"en".equals(selected.getResources().getConfiguration().getLocales().get(0).getLanguage()),
+                "Explicit English removes secondary locales");
+            check("Cancel".equals(selected.getString(cancel)),"Explicit English resolves English resources");
+            result.putString("stream","multi-locale baseChinese="+"取消".equals(dual.getString(cancel))
+                +" selectedEnglish="+"Cancel".equals(selected.getString(cancel))
+                +" returnedBase="+(selected==dual)+"\n");
+            finish(Activity.RESULT_OK,result);
+        } catch(Throwable failure) {
+            result.putString("stream","FAIL multi-locale probe ("+failure.getClass().getSimpleName()+").\n");
+            finish(Activity.RESULT_CANCELED,result);
+        }
+    }
     /** Exercises Android locale persistence without opening a wallet or a screen. */
     private void languageLocaleOnly(){
         Bundle result=new Bundle();android.content.Context context=getTargetContext();
@@ -323,10 +352,30 @@ public final class WalletDeviceInstrumentation extends Instrumentation {
                 &&AppLanguage.ENGLISH.equals(AppLanguage.choice(context))
                 &&"Cancel".equals(AppLanguage.wrap(context).getString(cancel)),
                 "English app locale and resources apply");
+            android.content.res.Configuration chineseConfig=
+                new android.content.res.Configuration(context.getResources().getConfiguration());
+            chineseConfig.setLocales(new android.os.LocaleList(java.util.Locale.forLanguageTag("zh-Hans-CN")));
+            android.content.Context chineseResources=context.createConfigurationContext(chineseConfig);
+            long fixedDate=946684800000L;
+            check("取消".equals(chineseResources.getString(cancel))
+                &&"Cancel".equals(LocalizedText.get(chineseResources,"Cancel")),
+                "Stored English overrides a Chinese resource context");
+            check(AppLanguage.formatDate(chineseResources,fixedDate,java.text.DateFormat.SHORT,
+                java.text.DateFormat.SHORT).equals(java.text.DateFormat.getDateTimeInstance(
+                java.text.DateFormat.SHORT,java.text.DateFormat.SHORT,java.util.Locale.ENGLISH)
+                .format(new java.util.Date(fixedDate))),
+                "Stored English controls date formatting");
             check(AppLanguage.set(context,AppLanguage.CHINESE)
                 &&AppLanguage.CHINESE.equals(AppLanguage.choice(context))
                 &&"取消".equals(AppLanguage.wrap(context).getString(cancel)),
                 "Chinese app locale and resources apply");
+            check("取消".equals(LocalizedText.get(context,"Cancel"))
+                &&AppLanguage.formatDate(context,fixedDate,java.text.DateFormat.SHORT,
+                    java.text.DateFormat.SHORT).equals(java.text.DateFormat.getDateTimeInstance(
+                    java.text.DateFormat.SHORT,java.text.DateFormat.SHORT,
+                    java.util.Locale.forLanguageTag("zh-Hans-CN"))
+                    .format(new java.util.Date(fixedDate))),
+                "Chinese copy and date formatting remain selected");
             check(AppLanguage.set(context,AppLanguage.ENGLISH)
                 &&AppLanguage.ENGLISH.equals(AppLanguage.choice(context))
                 &&"Cancel".equals(AppLanguage.wrap(context).getString(cancel)),

@@ -1,19 +1,21 @@
-# Blocknet Android v1.0.0-preview.4
+# Blocknet Android v1.0.0-preview.5
 
-This owner-signed preview repairs the language switch after selecting Simplified
-Chinese. Selecting English, Chinese, or the phone language now reapplies the
-choice and rebuilds the screen, even if that choice was already stored. A
-language change locks a loaded wallet first. If Core is still running and does
-not confirm the lock, the change does not proceed. The app also checks that
-Android accepted the requested app locale before reporting success.
+This owner-signed preview hardens language switching on Android 12 and other
+pre-Android 13 versions. An explicit English choice now uses a fresh English
+resource context, English interface copy, and English date formatting after
+an app update or screen recreation. Simplified Chinese and Follow phone
+language remain available. A language change still locks a loaded wallet
+first. If running Core does not confirm the lock, the change does not proceed.
 
-On an isolated, unfunded Android sidecar, the visible Settings picker completed
-English → Chinese → English, locked the wallet on each change, and required an
-explicit password unlock. Selecting English again also recreated a locked
-English view. A separate check confirmed English remained visible after app
-process death. These tests did not access a production wallet or send funds.
+The cause of a report that an Android 12 installation remained Chinese after
+preview.4 has not been confirmed. The earlier code already switched to English
+on an isolated Android 11 fixture. The updated build passed host tests and
+localization checks; an isolated Android 11 sidecar switched from saved Chinese
+to visible English and stayed English after process restart. Android 12 device
+validation remains open. These tests did not access a production wallet or
+send funds.
 
-Preview.4 carries forward preview.3's authenticated offline view of the last
+Preview.5 carries forward preview.3's authenticated offline view of the last
 saved wallet state. Balances and activity show a saved time and may be stale.
 Sending and broadcasting require a running, caught-up node and a permitted
 connection. It also retains the encrypted local address book and Simplified
@@ -24,12 +26,12 @@ the background and restarts on return, so live alerts stop while Core is down.
 Restart can take time, and synced-phone battery benefit has not been measured.
 
 This release keeps the owner signing certificate and advances Android
-versionCode to 4. It can update the owner-signed preview.2 and preview.3 in
-place while retaining app data. The address book is encrypted with a separate
-device-bound Android Keystore key; it is not a transferable backup. Record
-important recipient addresses separately before replacing or clearing a
-device. A fluent review of the Chinese wording and a production-wallet phone
-upgrade test remain open.
+versionCode to 5. It can update the owner-signed preview.2, preview.3 and
+preview.4 in place while retaining app data. The address book is encrypted
+with a separate device-bound Android Keystore key; it is not a transferable
+backup. Record important recipient addresses separately before replacing or
+clearing a device. A fluent review of the Chinese wording and a production
+wallet upgrade test remain open.
 
 ## Older debug-signed previews
 

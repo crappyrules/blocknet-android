@@ -27,11 +27,14 @@ final class AppLanguage {
     static Context forChoice(Context base,String choice){
         if(SYSTEM.equals(choice))return base;
         Locale locale=CHINESE.equals(choice)?Locale.forLanguageTag("zh-Hans-CN"):Locale.ENGLISH;
-        Locale current=base.getResources().getConfiguration().getLocales().get(0);
-        if(current.getLanguage().equals(locale.getLanguage())&&
-            (!CHINESE.equals(choice)||"Hans".equals(current.getScript())))return base;
+        LocaleList current=base.getResources().getConfiguration().getLocales();
+        // A matching first language does not prove the Context's resources are
+        // current after an in-place upgrade or Activity recreation. In particular,
+        // force an independent English Context on pre-Android 13 devices.
+        if(CHINESE.equals(choice)&&current.size()==1&&
+            "zh".equals(current.get(0).getLanguage())&&"Hans".equals(current.get(0).getScript()))return base;
         Configuration configuration=new Configuration(base.getResources().getConfiguration());
-        configuration.setLocale(locale);
+        configuration.setLocales(new LocaleList(locale));
         return base.createConfigurationContext(configuration);
     }
     static boolean set(Context context,String choice){
@@ -46,10 +49,13 @@ final class AppLanguage {
                 return choice.equals(choice(context));
             }
         }
-        return context.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit().putString(CHOICE,choice).commit();
+        if(!context.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit().putString(CHOICE,choice).commit())return false;
+        return choice.equals(choice(context));
     }
     static String formatDate(Context context,long millis,int dateStyle,int timeStyle){
-        Locale locale=context.getResources().getConfiguration().getLocales().get(0);
+        String selected=choice(context);
+        Locale locale=ENGLISH.equals(selected)?Locale.ENGLISH:CHINESE.equals(selected)
+            ?Locale.forLanguageTag("zh-Hans-CN"):context.getResources().getConfiguration().getLocales().get(0);
         return DateFormat.getDateTimeInstance(dateStyle,timeStyle,locale).format(new Date(millis));
     }
 }

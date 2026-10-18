@@ -10,6 +10,10 @@ final class LocalizedText {
     private LocalizedText(){}
     static String get(Context context,String source){
         if(source==null||source.isEmpty())return source;
+        // Every lookup starts from English source copy. Returning it directly
+        // keeps an explicit English choice English even if an OEM holds a stale
+        // Chinese Resources instance across an in-place update or recreation.
+        if(AppLanguage.ENGLISH.equals(AppLanguage.choice(context)))return source;
         Context localized=AppLanguage.wrap(context);
         Integer id=GeneratedTranslations.EXACT.get(source);
         if(id!=null)return localized.getString(id);
