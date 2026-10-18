@@ -23,7 +23,35 @@ public final class TransactionNotifier {
     public TransactionNotifier(Context context){this.context=context.getApplicationContext();runtime=NativeRuntime.get(context);api=new WalletApi(runtime);}
     public static boolean enabled(Context c){return c.getSharedPreferences("wallet",Context.MODE_PRIVATE).getBoolean(ENABLED,true);}
     public static boolean soundEnabled(Context c){return c.getSharedPreferences("wallet",Context.MODE_PRIVATE).getBoolean(SOUND,false);}
-    public static void setEnabled(Context c,boolean value)throws IOException {if(!c.getSharedPreferences("wallet",Context.MODE_PRIVATE).edit().putBoolean(ENABLED,value).commit())throw new IOException("Could not save transaction alert preference");}
+    interface AlertToggleStore {
+        boolean enabled();
+        boolean saveEnabled(boolean value);
+        boolean clearSeen();
+    }
+    static void changeEnabled(AlertToggleStore store,boolean value)throws IOException {
+        if(store.enabled()==value)return;
+        if(!value){
+            // Commit the disabled state first. A failed commit must leave the active
+            // alert baseline untouched, so the next poll cannot silently absorb activity.
+            if(!store.saveEnabled(false))throw new IOException("Could not save transaction alert preference");
+            return;
+        }
+        // Only a successful reset may enable alerts. The first valid observation
+        // after re-enable establishes a quiet baseline for the disabled interval.
+        if(!store.clearSeen())throw new IOException("Could not reset transaction alert baseline");
+        if(!store.saveEnabled(true))throw new IOException("Could not save transaction alert preference");
+    }
+    public static void setEnabled(Context c,boolean value)throws IOException {
+        synchronized(LOCK){
+            SharedPreferences wallet=c.getSharedPreferences("wallet",Context.MODE_PRIVATE);
+            SharedPreferences seen=c.getSharedPreferences("transaction-alert-state",Context.MODE_PRIVATE);
+            changeEnabled(new AlertToggleStore(){
+                @Override public boolean enabled(){return wallet.getBoolean(ENABLED,true);}
+                @Override public boolean saveEnabled(boolean next){return wallet.edit().putBoolean(ENABLED,next).commit();}
+                @Override public boolean clearSeen(){return seen.edit().clear().commit();}
+            },value);
+        }
+    }
     public static void setSoundEnabled(Context c,boolean value)throws IOException {if(!c.getSharedPreferences("wallet",Context.MODE_PRIVATE).edit().putBoolean(SOUND,value).commit())throw new IOException("Could not save transaction alert sound preference");}
     static final class Event {
         final String key,txid;final boolean incoming;final long amount;
@@ -86,9 +114,17 @@ public final class TransactionNotifier {
         }
         return result;
     }
+    interface PollAction { void run() throws Exception; }
+    static boolean pollWhenEnabled(boolean enabled,PollAction action) throws Exception {
+        if(!enabled)return false;
+        action.run();return true;
+    }
     /** Call only on a dedicated worker; locked/unloaded/scanning responses never establish a baseline. */
     public void poll(){
-        try{
+        try{pollWhenEnabled(enabled(context),this::pollEnabled);}
+        catch(Exception unavailable){/* No unlocked valid observation: retain durable baseline, never log wallet data. */}
+    }
+    private void pollEnabled() throws Exception {
             if(!runtime.alive())return;long generation=runtime.generation();String network=runtime.network(),wallet=runtime.prefs.getString("active."+network,"main.wallet.dat");
             if(runtime.prefs.contains("wallet-change."+network))return;
             JSONObject status=get("/api/status");if(status.optBoolean("syncing"))return;
@@ -109,23 +145,25 @@ public final class TransactionNotifier {
             for(int i=0;i<outputs.length();i++){JSONObject row=outputs.getJSONObject(i);int index=row.getInt("output_index");if(index<0)throw new IOException("Invalid wallet output index");events.add(new Event(txid(row),index,true,amount(row,"amount")));}
             if(!runtime.alive()||generation!=runtime.generation()||!network.equals(runtime.network())||!wallet.equals(runtime.prefs.getString("active."+network,"main.wallet.dat"))||runtime.prefs.contains("wallet-change."+network))return;
             String scope=scope(network,wallet);
-            synchronized(LOCK){Seen seen=read(scope);List<Event> fresh=observe(seen,events);save(scope,seen);publish(scope,fresh);}
-        }catch(Exception unavailable){/* No unlocked valid observation: retain durable baseline, never log wallet data. */}
+            synchronized(LOCK){
+                if(!enabled(context))return;
+                Seen seen=read(scope);List<Event> fresh=observe(seen,events);save(scope,seen);publish(scope,fresh);
+            }
     }
     /** Accepted broadcast hook: failures here must never turn a successful send into a retry. */
     public void acceptedOutgoing(String network,String wallet,JSONObject result){
-        try{JSONArray recipients=result.getJSONArray("recipients");long total=0;for(int i=0;i<recipients.length();i++)total=Math.addExact(total,amount(recipients.getJSONObject(i),"amount"));Event event=new Event(txid(result),-1,false,total);String scope=scope(network,wallet);synchronized(LOCK){Seen seen=read(scope);boolean fresh=!seen.ids.contains(event.key);seen.touch(event.key);save(scope,seen);if(fresh)publish(scope,Collections.singletonList(event));}}catch(Exception unavailable){/* Never alter send outcome or expose wallet contents. */}
+        try{JSONArray recipients=result.getJSONArray("recipients");long total=0;for(int i=0;i<recipients.length();i++)total=Math.addExact(total,amount(recipients.getJSONObject(i),"amount"));Event event=new Event(txid(result),-1,false,total);String scope=scope(network,wallet);synchronized(LOCK){if(!enabled(context))return;Seen seen=read(scope);boolean fresh=!seen.ids.contains(event.key);seen.touch(event.key);save(scope,seen);if(fresh)publish(scope,Collections.singletonList(event));}}catch(Exception unavailable){/* Never alter send outcome or expose wallet contents. */}
     }
     private void channels(NotificationManager manager){
-        NotificationChannel silent=new NotificationChannel(SILENT_CHANNEL,"Transaction alerts · silent",NotificationManager.IMPORTANCE_DEFAULT);silent.setDescription("New wallet payments without sound");silent.setSound(null,null);silent.enableVibration(false);silent.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);manager.createNotificationChannel(silent);
-        NotificationChannel sound=new NotificationChannel(SOUND_CHANNEL,"Transaction alerts · sound",NotificationManager.IMPORTANCE_DEFAULT);sound.setDescription("New wallet payments with notification sound");sound.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());sound.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);manager.createNotificationChannel(sound);
+        NotificationChannel silent=new NotificationChannel(SILENT_CHANNEL,LocalizedText.get(context,"Transaction alerts · silent"),NotificationManager.IMPORTANCE_DEFAULT);silent.setDescription(LocalizedText.get(context,"New wallet payments without sound"));silent.setSound(null,null);silent.enableVibration(false);silent.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);manager.createNotificationChannel(silent);
+        NotificationChannel sound=new NotificationChannel(SOUND_CHANNEL,LocalizedText.get(context,"Transaction alerts · sound"),NotificationManager.IMPORTANCE_DEFAULT);sound.setDescription(LocalizedText.get(context,"New wallet payments with notification sound"));sound.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());sound.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);manager.createNotificationChannel(sound);
     }
     private void publish(String scope,List<Event> events){
         if(events.isEmpty()||!enabled(context)||(Build.VERSION.SDK_INT>=33&&context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED))return;
         NotificationManager manager=context.getSystemService(NotificationManager.class);if(manager==null||!manager.areNotificationsEnabled())return;channels(manager);String channel=soundEnabled(context)?SOUND_CHANNEL:SILENT_CHANNEL;
         PendingIntent open=PendingIntent.getActivity(context,0,new Intent(context,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_CLEAR_TOP),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
-        Notification publicVersion=new Notification.Builder(context,SILENT_CHANNEL).setSmallIcon(R.drawable.ic_wallet).setContentTitle("Blocknet Wallet").setContentText("New wallet activity").build();
-        int limit=Math.min(10,events.size());for(int i=0;i<limit;i++){Event event=events.get(i);Notification notification=new Notification.Builder(context,channel).setSmallIcon(R.drawable.ic_wallet).setContentTitle(event.incoming?"Payment received":"Payment sent").setContentText(Amounts.format(event.amount)+" BNT").setCategory(Notification.CATEGORY_EVENT).setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(publicVersion).setAutoCancel(true).setContentIntent(open).build();manager.notify(scope+":"+event.key,1001,notification);}
-        if(events.size()>limit){Notification summary=new Notification.Builder(context,channel).setSmallIcon(R.drawable.ic_wallet).setContentTitle("Wallet activity updated").setContentText(events.size()+" new wallet activity entries. Open the wallet to review.").setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(publicVersion).setAutoCancel(true).setContentIntent(open).build();manager.notify(scope+":summary",1002,summary);}
+        Notification publicVersion=new Notification.Builder(context,SILENT_CHANNEL).setSmallIcon(R.drawable.ic_wallet).setContentTitle(context.getString(R.string.app_name)).setContentText(LocalizedText.get(context,"New wallet activity")).build();
+        int limit=Math.min(10,events.size());for(int i=0;i<limit;i++){Event event=events.get(i);Notification notification=new Notification.Builder(context,channel).setSmallIcon(R.drawable.ic_wallet).setContentTitle(LocalizedText.get(context,event.incoming?"Payment received":"Payment sent")).setContentText(Amounts.format(event.amount)+" BNT").setCategory(Notification.CATEGORY_EVENT).setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(publicVersion).setAutoCancel(true).setContentIntent(open).build();manager.notify(scope+":"+event.key,1001,notification);}
+        if(events.size()>limit){Notification summary=new Notification.Builder(context,channel).setSmallIcon(R.drawable.ic_wallet).setContentTitle(LocalizedText.get(context,"Wallet activity updated")).setContentText(LocalizedText.get(context,events.size()+" new wallet activity entries. Open the wallet to review.")).setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(publicVersion).setAutoCancel(true).setContentIntent(open).build();manager.notify(scope+":summary",1002,summary);}
     }
 }

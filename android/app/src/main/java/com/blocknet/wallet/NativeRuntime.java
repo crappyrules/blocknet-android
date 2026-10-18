@@ -100,14 +100,15 @@ public final class NativeRuntime {
     public synchronized void start() throws Exception {
         SyncNetworkPolicy.State connection = SyncNetworkPolicy.read(context);
         if (!connection.allowed) throw new IOException(connection.reason);
+        if (!MobileCorePolicy.permitted(context)) throw new IOException("Node stopped while wallet is in background");
         if (alive()) { message = "Node running"; return; }
         starting = true;
         message = "Starting local node…";
         try {
             if (!Arrays.asList(Build.SUPPORTED_ABIS).contains("arm64-v8a") || !Arrays.asList("aarch64", "arm64").contains(Os.uname().machine))
                 throw new IOException("This wallet requires a 64-bit ARM Android device (arm64-v8a).");
-            if (!binary("libblocknet_core.so").canExecute() || !binary("libmantle.so").canExecute())
-                throw new IOException("This build requires a 64-bit ARM Android device. Packaged core binaries were not found.");
+            if (!binary("libblocknet_core.so").canExecute())
+                throw new IOException("This build requires a 64-bit ARM Android device. The packaged Core executable was not found.");
             dataDir().mkdirs(); walletsDir().mkdirs();
             Os.chmod(networkDir().getPath(), 0700);
             Os.chmod(dataDir().getPath(), 0700);
@@ -127,9 +128,13 @@ public final class NativeRuntime {
             settings.put("wallet_file", new File(walletsDir(), wallet).getAbsolutePath());
             settings.put("chain_cache_cap", 256);
             if (network().equals("mainnet")) settings.put("full_sync", false);
-            // The core calls this seed mode: it also lets the local wallet work offline.
-            settings.put("seed", true);
-            // Core derives the peer-ID endpoint as listen-port + 1; port zero yields privileged port 1.
+            // The mobile executable starts offline without acting as a seed or listening for peers.
+            // Older executables do not understand these settings and retain their existing behavior.
+            settings.put("seed", !BuildConfig.CORE_MOBILE_CLIENT);
+            // Keep settings.json compatible with the pinned older Core for rollback.
+            settings.remove("mobile_client");
+            settings.remove("allow_offline_start");
+            // Core derives the peer-ID endpoint as listen-port + 1 on non-mobile seed nodes.
             if (!settings.has("listen") || settings.optString("listen").equals("/ip4/0.0.0.0/tcp/0"))
                 settings.put("listen", network().equals("mainnet") ? "/ip4/0.0.0.0/tcp/28080" : "/ip4/0.0.0.0/tcp/38080");
             if (!settings.has("p2p_max_inbound")) settings.put("p2p_max_inbound", 8);
@@ -144,17 +149,18 @@ public final class NativeRuntime {
             if (network().equals("testnet")) cmd.add("--testnet");
             ProcessBuilder pb = new ProcessBuilder(cmd).directory(networkDir()).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(logFile()));
             setEnvironment(pb);
+            if (BuildConfig.CORE_MOBILE_CLIENT) pb.environment().put("BLOCKNET_MOBILE_CLIENT", "1");
             pb.environment().put("BNT_PID_FILE", pidFile().getAbsolutePath());
             // Settings/file preparation may take time; do not spawn after a network handover.
             connection = SyncNetworkPolicy.read(context);
             if (!connection.allowed) throw new IOException(connection.reason);
+            if (!MobileCorePolicy.permitted(context)) throw new IOException("Node stopped while wallet is in background");
             child = pb.start();
             generation++;
             checkpointVerification = null;
             checkpointGeneration = -1;
             child.getOutputStream().close();
             message = "Loading blockchain and connecting to peers…";
-            writeMantleConfig();
         } catch (Exception e) { message = e.getMessage(); throw e; }
         finally { starting = false; }
     }
@@ -204,7 +210,7 @@ public final class NativeRuntime {
     public void refreshCheckpointsInBackground() {
         synchronized (this) {
             long now = android.os.SystemClock.elapsedRealtime();
-            if (!syncRequested || !alive() || !network().equals("mainnet") || (checkpointRefreshAttempt > 0 && now - checkpointRefreshAttempt < 15 * 60 * 1000)) return;
+            if (!syncRequested || !alive() || !MobileCorePolicy.permitted(context) || !network().equals("mainnet") || (checkpointRefreshAttempt > 0 && now - checkpointRefreshAttempt < 15 * 60 * 1000)) return;
             checkpointRefreshAttempt = now;
         }
         try { refreshCheckpoints(); } catch (Exception ignored) { }
@@ -217,6 +223,7 @@ public final class NativeRuntime {
         synchronized (this) {
             SyncNetworkPolicy.State connection = SyncNetworkPolicy.read(context);
             if (!connection.allowed) throw new IOException(connection.reason);
+            if (!MobileCorePolicy.permitted(context)) throw new IOException("Node stopped while wallet is in background");
             if (!network().equals("mainnet")) throw new IOException("Published checkpoints are for mainnet");
             directory = dataDir(); expectedGeneration = generation;
         }
@@ -225,18 +232,18 @@ public final class NativeRuntime {
         try {
             status = CheckpointManager.refresh(directory, (CheckpointManager.ConnectionFactory) url -> {
                 android.net.Network network = SyncNetworkPolicy.allowedNetwork(context);
-                if (network == null || downloadEpoch != checkpointDownloadEpoch.get()) throw new IOException("Checkpoint refresh cancelled or no permitted network");
+                if (network == null || downloadEpoch != checkpointDownloadEpoch.get() || !MobileCorePolicy.permitted(context)) throw new IOException("Checkpoint refresh cancelled or no permitted network");
                 HttpURLConnection connection = (HttpURLConnection)network.openConnection(url);
                 ownedDownload[0] = connection;
                 checkpointConnection.set(connection);
-                if (!SyncNetworkPolicy.read(context).allowed || downloadEpoch != checkpointDownloadEpoch.get()) {
+                if (!SyncNetworkPolicy.read(context).allowed || !MobileCorePolicy.permitted(context) || downloadEpoch != checkpointDownloadEpoch.get()) {
                     connection.disconnect(); throw new IOException("Sync connection is no longer allowed");
                 }
                 return connection;
             });
         } finally { checkpointConnection.compareAndSet(ownedDownload[0],null); }
         synchronized (this) {
-            if (!network().equals("mainnet") || generation != expectedGeneration) throw new IOException("The node changed while checkpoints were refreshing. Check its current status.");
+            if (!network().equals("mainnet") || generation != expectedGeneration || downloadEpoch != checkpointDownloadEpoch.get() || !MobileCorePolicy.permitted(context)) throw new IOException("The node changed while checkpoints were refreshing. Check its current status.");
             checkpointWarning = checkpointMessage(status);
             checkpointVerification = null; checkpointGeneration = -1;
             JSONObject result;
@@ -248,33 +255,9 @@ public final class NativeRuntime {
     }
     void setEnvironment(ProcessBuilder pb) {
         pb.environment().put("HOME", root.getAbsolutePath());
-        pb.environment().put("BNT_CONFIG_DIR", new File(root, "mantle").getAbsolutePath());
         pb.environment().put("TMPDIR", context.getCacheDir().getAbsolutePath());
         pb.environment().put("NO_COLOR", "1");
         pb.environment().put("GOMEMLIMIT", "384MiB");
-    }
-    void writeMantleConfig() throws Exception {
-        File cfg = new File(root, "mantle"); cfg.mkdirs();
-        JSONObject core = new JSONObject().put("enabled", true).put("version", "v0.22.0")
-            .put("data_dir", dataDir().getAbsolutePath())
-            .put("wallet_file", new File(walletsDir(), prefs.getString("active." + network(), "main.wallet.dat")).getAbsolutePath())
-            .put("api_addr", "127.0.0.1:" + port());
-        writePrivate(new File(cfg, "config.json"), new JSONObject().put("check_interval", "876000h").put("cores", new JSONObject().put(network(), core)).toString());
-        writePrivate(new File(cfg, ".last_upgrade_check"), String.valueOf(System.currentTimeMillis()/1000));
-        if (pid() > 1) writePrivate(new File(cfg, "core." + network() + ".pid"), String.valueOf(pid()));
-    }
-    public String mantle(String... args) throws Exception {
-        List<String> command = new ArrayList<>(); command.add(binary("libmantle.so").getAbsolutePath()); command.addAll(Arrays.asList(args));
-        File out = File.createTempFile("mantle-", ".log", context.getCacheDir());
-        try {
-            ProcessBuilder pb = new ProcessBuilder(command).directory(root).redirectErrorStream(true).redirectOutput(out);
-            setEnvironment(pb);
-            Process p = pb.start(); p.getOutputStream().close();
-            if (!p.waitFor(15, TimeUnit.SECONDS)) { p.destroyForcibly(); throw new IOException("Mantle diagnostics timed out"); }
-            String result = new String(Files.readAllBytes(out.toPath()), StandardCharsets.UTF_8).replaceAll("\\u001B\\[[;\\d]*[ -/]*[@-~]", "");
-            if (p.exitValue() != 0) throw new IOException(result.trim().isEmpty() ? "Mantle exited " + p.exitValue() : result);
-            return result;
-        } finally { out.delete(); }
     }
     static void writePrivate(File target, String text) throws Exception {
         target.getParentFile().mkdirs();

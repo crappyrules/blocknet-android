@@ -9,7 +9,7 @@
 
 # Blocknet Android Wallet
 
-Native Android wallet for Blocknet mainnet, using Blocknet Core and Mantle.
+Native Android wallet for Blocknet mainnet, using the bundled Blocknet Core executable.
 
 > [!CAUTION]
 > **Existing preview wallet? Verify recovery before changing APKs.** Earlier
@@ -22,6 +22,9 @@ Native Android wallet for Blocknet mainnet, using Blocknet Core and Mantle.
 > encrypted wallet backup **and its password**. Losing every usable recovery
 > copy can permanently lose access to your coins. Read the
 > [migration warning](android/docs/OWNER_RELEASE_NOTES.md) before installing.
+> The published `v1.0.0-preview.2` APK uses the owner certificate. A newer APK
+> with the same package name and certificate can update it in place and keep
+> its app data; the warning above concerns migration from older certificates.
 
 <p align="center"><a href="https://github.com/crappyrules/blocknet-android/releases"><strong>Download the Android preview APK →</strong></a></p>
 
@@ -67,21 +70,18 @@ Locked-wallet alerts require the **activity** Core build and opening the wallet 
 - [Download APKs from Releases](https://github.com/crappyrules/blocknet-android/releases)
 - [Browse CI builds and test reports](https://github.com/crappyrules/blocknet-android/actions/workflows/android.yml)
 
-The `android-test` directory contains the supplied ARM64 build inputs.
+The old bundled Core executables and their test directory are removed from
+the current source tree. Android builds Core from pinned upstream source and
+the ordered reviewed mobile patches.
 
 ## GitHub Actions APK builds
 
 [Build Android APK](https://github.com/crappyrules/blocknet-android/actions/workflows/android.yml)
 runs on pushes to `master`, pull requests, version tags, and manual **Run workflow** requests.
-The ordinary run tests, lints, builds and verifies two ARM64 debug APK variants:
+The ordinary run builds, tests, lints, and verifies the ARM64 mobile Core APK
+from pinned source. There is no bundled-binary fallback.
 
-- **activity**: rebuilds the pinned Core source with the reviewed activity and
-  signed announcement patches; supports transaction alerts while a loaded
-  wallet is locked.
-- **supplied**: packages the original supplied Core unchanged as a compatibility
-  fallback.
-
-Open a successful run and download the desired APK artifact under **Artifacts**.
+Open a successful run and download the mobile APK artifact under **Artifacts**.
 Each includes a debug APK, checksum and build provenance. CI debug APKs use disposable signing
 keys and are only for testing. A version tag does **not** publish a release.
 Owner signing and publication are separate manual jobs protected by GitHub

@@ -1,0 +1,715 @@
+From f75fafcce0a558ae21abcead1e2d574c913b6346 Mon Sep 17 00:00:00 2001
+From: Codex Review <codex-review@example.invalid>
+Date: Sat, 17 Oct 2026 18:48:35 -0400
+Subject: [PATCH] Pin wallet during sends and reject orphaned scan events
+
+---
+ api_handlers.go                       |  74 +++++++++-------
+ api_send_unload_lifetime_test.go      | 122 ++++++++++++++++++++++++++
+ api_server.go                         |  45 +++++++++-
+ api_wallet_activity.go                |   5 +-
+ api_wallet_activity_readiness_test.go |  51 +++++++++++
+ cli.go                                |  39 ++++++--
+ wallet_canonical_followup_test.go     | 116 ++++++++++++++++++++++++
+ 7 files changed, 409 insertions(+), 43 deletions(-)
+ create mode 100644 api_send_unload_lifetime_test.go
+ create mode 100644 api_wallet_activity_readiness_test.go
+ create mode 100644 wallet_canonical_followup_test.go
+
+diff --git a/api_handlers.go b/api_handlers.go
+index 4a5c046..c10d671 100644
+--- a/api_handlers.go
++++ b/api_handlers.go
+@@ -1165,13 +1165,11 @@ func (s *APIServer) handleIdempotentSendStatus(w http.ResponseWriter, r *http.Re
+ // handleSend builds and broadcasts a transaction.
+ // POST /api/wallet/send
+ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
+-	if !s.requireWallet(w, r) {
+-		return
+-	}
+-	if s.wallet.IsViewOnly() {
+-		writeError(w, http.StatusForbidden, "view-only wallet cannot send")
++	sendWallet, ok := s.beginSendWallet(w)
++	if !ok {
+ 		return
+ 	}
++	defer s.walletOpMu.RUnlock()
+ 
+ 	bodyBytes, err := io.ReadAll(r.Body)
+ 	if err != nil {
+@@ -1261,9 +1259,9 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
+ 		writeError(w, http.StatusServiceUnavailable, "wallet or node is syncing; wait for the wallet scan")
+ 		return
+ 	}
+-	spendable := s.wallet.SpendableBalance(height)
++	spendable := sendWallet.SpendableBalance(height)
+ 	if spendable < totalSend {
+-		pending := s.wallet.PendingBalance(height)
++		pending := sendWallet.PendingBalance(height)
+ 		if pending > 0 {
+ 			writeError(w, http.StatusBadRequest, fmt.Sprintf("insufficient spendable balance: have %s spendable + %s pending (confirming), need %s",
+ 				formatAmount(spendable), formatAmount(pending), formatAmount(totalSend)))
+@@ -1282,12 +1280,12 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
+ 				writeError(w, http.StatusBadRequest, "send amount + fee overflows")
+ 				return
+ 			}
+-			lease, inputs, err := s.wallet.ReserveMatureInputs(height, need, 2*time.Second)
++			lease, inputs, err := sendWallet.ReserveMatureInputs(height, need, 2*time.Second)
+ 			if err != nil {
+ 				writeError(w, http.StatusBadRequest, fmt.Sprintf("insufficient funds: %v", err))
+ 				return
+ 			}
+-			s.wallet.ReleaseInputLease(lease)
++			sendWallet.ReleaseInputLease(lease)
+ 
+ 			var inputTotal uint64
+ 			for _, inp := range inputs {
+@@ -1326,7 +1324,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
+ 		return
+ 	}
+ 
+-	builder := s.createTxBuilder()
++	builder := s.createTxBuilderForWallet(sendWallet)
+ 	result, err := builder.Transfer(toWalletRecipients(validated), sendFeePerByte, height)
+ 	if err != nil {
+ 		writeSendError(w, r, err)
+@@ -1334,21 +1332,21 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
+ 	}
+ 
+ 	if currentHeight, currentHash, ready := s.walletSendTip(); !ready || currentHeight != height || currentHash != sendHash {
+-		s.wallet.ReleaseInputLease(result.InputLease)
++		sendWallet.ReleaseInputLease(result.InputLease)
+ 		writeError(w, http.StatusServiceUnavailable, "wallet or node changed while preparing the transaction; review it again")
+ 		return
+ 	}
+-	if err := s.daemon.SubmitTransaction(result.TxData); err != nil {
+-		s.wallet.ReleaseInputLease(result.InputLease)
++	if err := s.submitWalletTransaction(result.TxData); err != nil {
++		sendWallet.ReleaseInputLease(result.InputLease)
+ 		writeSendError(w, r, err)
+ 		return
+ 	}
+ 
+ 	for _, spent := range result.SpentOutputs {
+-		s.wallet.MarkSpentByTx(spent.OneTimePubKey, result.TxID)
++		sendWallet.MarkSpentByTx(spent.OneTimePubKey, result.TxID)
+ 	}
+ 
+-	s.wallet.RecordSend(&wallet.SendRecord{
++	sendWallet.RecordSend(&wallet.SendRecord{
+ 		TxID:        result.TxID,
+ 		Timestamp:   time.Now().Unix(),
+ 		Recipients:  buildSendRecipients(validated),
+@@ -1356,9 +1354,9 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
+ 		BlockHeight: height,
+ 	})
+ 	if result.Change > 0 {
+-		s.wallet.AddPendingCredit(result.TxID, result.Change)
++		sendWallet.AddPendingCredit(result.TxID, result.Change)
+ 	}
+-	if err := s.wallet.Save(); err != nil {
++	if err := sendWallet.Save(); err != nil {
+ 		log.Printf("Warning: wallet persistence failed after send %x: %v", result.TxID, err)
+ 	}
+ 
+@@ -1387,13 +1385,11 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
+ // handleSendAdvanced builds a transaction using caller-specified inputs (coin control).
+ // POST /api/wallet/send/advanced
+ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
+-	if !s.requireWallet(w, r) {
+-		return
+-	}
+-	if s.wallet.IsViewOnly() {
+-		writeError(w, http.StatusForbidden, "view-only wallet cannot send")
++	sendWallet, ok := s.beginSendWallet(w)
++	if !ok {
+ 		return
+ 	}
++	defer s.walletOpMu.RUnlock()
+ 
+ 	bodyBytes, err := io.ReadAll(r.Body)
+ 	if err != nil {
+@@ -1521,7 +1517,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
+ 
+ 	height := readyHeight
+ 
+-	lease, inputs, err := s.wallet.ReserveSpecificInputs(refs, height, 2*time.Minute)
++	lease, inputs, err := sendWallet.ReserveSpecificInputs(refs, height, 2*time.Minute)
+ 	if err != nil {
+ 		writeError(w, http.StatusBadRequest, err.Error())
+ 		return
+@@ -1530,7 +1526,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
+ 	releaseLease := true
+ 	defer func() {
+ 		if releaseLease {
+-			s.wallet.ReleaseInputLease(lease)
++			sendWallet.ReleaseInputLease(lease)
+ 		}
+ 	}()
+ 
+@@ -1575,7 +1571,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
+ 	}
+ 
+ 	releaseLease = false
+-	builder := s.createTxBuilder()
++	builder := s.createTxBuilderForWallet(sendWallet)
+ 	result, err := builder.TransferWithInputs(inputs, lease, toWalletRecipients(validated), sendFeePerByte, changeSplit, height)
+ 	if err != nil {
+ 		writeSendError(w, r, err)
+@@ -1583,21 +1579,21 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
+ 	}
+ 
+ 	if currentHeight, currentHash, ready := s.walletSendTip(); !ready || currentHeight != height || currentHash != sendHash {
+-		s.wallet.ReleaseInputLease(result.InputLease)
++		sendWallet.ReleaseInputLease(result.InputLease)
+ 		writeError(w, http.StatusServiceUnavailable, "wallet or node changed while preparing the transaction; review it again")
+ 		return
+ 	}
+-	if err := s.daemon.SubmitTransaction(result.TxData); err != nil {
+-		s.wallet.ReleaseInputLease(result.InputLease)
++	if err := s.submitWalletTransaction(result.TxData); err != nil {
++		sendWallet.ReleaseInputLease(result.InputLease)
+ 		writeSendError(w, r, err)
+ 		return
+ 	}
+ 
+ 	for _, spent := range result.SpentOutputs {
+-		s.wallet.MarkSpentByTx(spent.OneTimePubKey, result.TxID)
++		sendWallet.MarkSpentByTx(spent.OneTimePubKey, result.TxID)
+ 	}
+ 
+-	s.wallet.RecordSend(&wallet.SendRecord{
++	sendWallet.RecordSend(&wallet.SendRecord{
+ 		TxID:        result.TxID,
+ 		Timestamp:   time.Now().Unix(),
+ 		Recipients:  buildSendRecipients(validated),
+@@ -1605,9 +1601,9 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
+ 		BlockHeight: height,
+ 	})
+ 	if result.Change > 0 {
+-		s.wallet.AddPendingCredit(result.TxID, result.Change)
++		sendWallet.AddPendingCredit(result.TxID, result.Change)
+ 	}
+-	if err := s.wallet.Save(); err != nil {
++	if err := sendWallet.Save(); err != nil {
+ 		log.Printf("Warning: wallet persistence failed after send %x: %v", result.TxID, err)
+ 	}
+ 
+@@ -1655,6 +1651,8 @@ func (s *APIServer) handleUnloadWallet(w http.ResponseWriter, r *http.Request) {
+ 		s.cli.scanMu.Lock()
+ 		defer s.cli.scanMu.Unlock()
+ 	}
++	s.walletOpMu.Lock()
++	defer s.walletOpMu.Unlock()
+ 	s.mu.Lock()
+ 	if s.wallet == nil {
+ 		s.mu.Unlock()
+@@ -2979,6 +2977,9 @@ func (s *APIServer) catchUpScan() {
+ 			s.cli.scanMu.Unlock()
+ 			break
+ 		}
++		if s.cli.beforeCatchUpBlockApply != nil {
++			s.cli.beforeCatchUpBlockApply(block)
++		}
+ 		applyBlockToWallet(s.daemon.Chain(), w, sc, block)
+ 		w.ReconcileUnconfirmedSpends(func(txID [32]byte) bool {
+ 			return s.daemon.Mempool().HasTransaction(txID)
+@@ -3279,6 +3280,13 @@ func (s *APIServer) walletSendChainStates(txIDs [][32]byte, chainHeight uint64)
+ 
+ // createTxBuilder creates a transaction builder wired to the daemon (same as CLI).
+ func (s *APIServer) createTxBuilder() *wallet.Builder {
++	s.mu.RLock()
++	w := s.wallet
++	s.mu.RUnlock()
++	return s.createTxBuilderForWallet(w)
++}
++
++func (s *APIServer) createTxBuilderForWallet(sendWallet *wallet.Wallet) *wallet.Builder {
+ 	cfg := wallet.TransferConfig{
+ 		SelectRingMembers: func(realPubKey, realCommitment [32]byte) (keys, commitments [][32]byte, secretIndex int, err error) {
+ 			ringData, err := s.daemon.Chain().SelectRingMembersWithCommitments(realPubKey, realCommitment)
+@@ -3339,5 +3347,5 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
+ 		FeePerByte:  sendFeePerByte,
+ 	}
+ 
+-	return wallet.NewBuilder(s.wallet, cfg)
++	return wallet.NewBuilder(sendWallet, cfg)
+ }
+diff --git a/api_send_unload_lifetime_test.go b/api_send_unload_lifetime_test.go
+new file mode 100644
+index 0000000..a8f6a3b
+--- /dev/null
++++ b/api_send_unload_lifetime_test.go
+@@ -0,0 +1,122 @@
++package main
++
++import (
++	"bytes"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"blocknet/wallet"
++)
++
++func TestSendAndAdvancedSendHoldWalletThroughBroadcastAndPersistence(t *testing.T) {
++	for _, advanced := range []bool{false, true} {
++		name := "standard"
++		if advanced {
++			name = "advanced"
++		}
++		t.Run(name, func(t *testing.T) {
++			chain, storage, cleanup := mustCreateTestChain(t)
++			defer cleanup()
++			mustAddGenesisBlock(t, chain)
++			chain.mu.Lock()
++			chain.height = 100 // disposable maturity fixture used by existing send tests
++			chain.publishTipLocked()
++			chain.mu.Unlock()
++			d, stop := mustStartTestDaemon(t, chain)
++			defer stop()
++			path := filepath.Join(t.TempDir(), "disposable.wallet")
++			sender, err := wallet.NewWallet(path, []byte("pw"), defaultWalletConfig())
++			if err != nil {
++				t.Fatal(err)
++			}
++			seedCanonicalSpendableOutput(t, chain, storage, sender, 10_000_000)
++			sender.SetSyncedTip(100, chain.BestHash())
++			if err := sender.Save(); err != nil {
++				t.Fatal(err)
++			}
++			recipient, err := wallet.NewWallet(filepath.Join(t.TempDir(), "recipient.wallet"), []byte("pw"), defaultWalletConfig())
++			if err != nil {
++				t.Fatal(err)
++			}
++			s := NewAPIServer(d, sender, nil, t.TempDir(), []byte("pw"))
++			s.cli = &CLI{daemon: d, wallet: sender}
++			entered, release := make(chan struct{}), make(chan struct{})
++			s.submitTransactionForTest = func(data []byte) error {
++				if len(data) == 0 {
++					return fmt.Errorf("builder supplied empty transaction")
++				}
++				close(entered)
++				<-release
++				return nil // mocked broadcast; no mempool or peer submission
++			}
++			body := fmt.Sprintf(`{"recipients":[{"address":%q,"amount":1,"memo_hex":"00"}]}`, recipient.Address())
++			endpoint := "/api/wallet/send"
++			handler := s.handleSend
++			if advanced {
++				endpoint = "/api/wallet/send/advanced"
++				handler = s.handleSendAdvanced
++				input := sender.AllOutputs()[0]
++				body = fmt.Sprintf(`{"recipients":[{"address":%q,"amount":1,"memo_hex":"00"}],"inputs":[{"txid":"%x","output_index":%d}],"change_split":1}`,
++					recipient.Address(), input.TxID, input.OutputIndex)
++			}
++			sendDone := make(chan *httptest.ResponseRecorder, 1)
++			go func() {
++				rr := httptest.NewRecorder()
++				req := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString(body))
++				req.RemoteAddr = "198.51.100.45:1234"
++				handler(rr, req)
++				sendDone <- rr
++			}()
++			select {
++			case <-entered:
++			case rr := <-sendDone:
++				t.Fatalf("send stopped before mock broadcast: %d %s", rr.Code, rr.Body.String())
++			case <-time.After(30 * time.Second):
++				t.Fatal("send never reached mock broadcast")
++			}
++			unloadDone := make(chan *httptest.ResponseRecorder, 1)
++			go func() {
++				rr := httptest.NewRecorder()
++				s.handleUnloadWallet(rr, httptest.NewRequest(http.MethodPost, "/api/wallet/unload", nil))
++				unloadDone <- rr
++			}()
++			select {
++			case rr := <-unloadDone:
++				t.Fatalf("unload passed an in-flight send: %d %s", rr.Code, rr.Body.String())
++			case <-time.After(50 * time.Millisecond):
++			}
++			close(release)
++			select {
++			case rr := <-sendDone:
++				if rr.Code != http.StatusOK {
++					t.Fatalf("send status %d: %s", rr.Code, rr.Body.String())
++				}
++			case <-time.After(30 * time.Second):
++				t.Fatal("send did not finish")
++			}
++			select {
++			case rr := <-unloadDone:
++				if rr.Code != http.StatusOK {
++					t.Fatalf("unload status %d: %s", rr.Code, rr.Body.String())
++				}
++			case <-time.After(30 * time.Second):
++				t.Fatal("unload did not finish")
++			}
++			reloaded, err := wallet.LoadWallet(path, []byte("pw"), defaultWalletConfig())
++			if err != nil {
++				t.Fatal(err)
++			}
++			outputs, records := reloaded.AllOutputs(), reloaded.SendRecords()
++			if len(outputs) != 1 || len(records) != 1 || !outputs[0].Spent || outputs[0].SpentTxID != records[0].TxID {
++				t.Fatal("submitted spend and send record were not persisted on the leased wallet")
++			}
++			if reloaded.PendingUnconfirmedBalance() == 0 {
++				t.Fatal("submitted change credit was not persisted")
++			}
++		})
++	}
++}
+diff --git a/api_server.go b/api_server.go
+index decf31d..1905321 100644
+--- a/api_server.go
++++ b/api_server.go
+@@ -42,6 +42,9 @@ type APIServer struct {
+ 	passwordHash    [32]byte
+ 	passwordHashSet bool
+ 	mu              sync.RWMutex
++	// A send keeps its wallet instance alive through post-broadcast accounting
++	// and persistence. Unload takes the exclusive side before dropping it.
++	walletOpMu sync.RWMutex
+ 
+ 	// Back-reference to CLI for wallet hot-loading in daemon mode
+ 	cli *CLI
+@@ -54,6 +57,9 @@ type APIServer struct {
+ 	sendLimiter *perIPLimiter
+ 	sendSem     chan struct{}
+ 	sendIdem    *idempotencyCache
++	// Nil in production. Tests can stop at the broadcast boundary without
++	// submitting a transaction to a mempool or a peer.
++	submitTransactionForTest func([]byte) error
+ 
+ 	// Route-scoped abuse controls for stateless signature verification.
+ 	verifyLimiter *perIPLimiter
+@@ -431,17 +437,52 @@ func (s *APIServer) isLocked() bool {
+ // requireWallet checks that the wallet exists and is unlocked.
+ // Returns true if the request should proceed.
+ func (s *APIServer) requireWallet(w http.ResponseWriter, _ *http.Request) bool {
+-	if s.wallet == nil {
++	s.mu.RLock()
++	loaded, locked := s.wallet, s.locked
++	s.mu.RUnlock()
++	if loaded == nil {
+ 		writeError(w, http.StatusServiceUnavailable, "no wallet loaded")
+ 		return false
+ 	}
+-	if s.isLocked() {
++	if locked {
+ 		writeError(w, http.StatusForbidden, "wallet is locked")
+ 		return false
+ 	}
+ 	return true
+ }
+ 
++// beginSendWallet pins one loaded wallet until the handler finishes its local
++// accounting. Callers must release walletOpMu after all post-submit writes.
++func (s *APIServer) beginSendWallet(w http.ResponseWriter) (*wallet.Wallet, bool) {
++	s.walletOpMu.RLock()
++	s.mu.RLock()
++	loaded, locked := s.wallet, s.locked
++	s.mu.RUnlock()
++	if loaded == nil {
++		s.walletOpMu.RUnlock()
++		writeError(w, http.StatusServiceUnavailable, "no wallet loaded")
++		return nil, false
++	}
++	if locked {
++		s.walletOpMu.RUnlock()
++		writeError(w, http.StatusForbidden, "wallet is locked")
++		return nil, false
++	}
++	if loaded.IsViewOnly() {
++		s.walletOpMu.RUnlock()
++		writeError(w, http.StatusForbidden, "view-only wallet cannot send")
++		return nil, false
++	}
++	return loaded, true
++}
++
++func (s *APIServer) submitWalletTransaction(txData []byte) error {
++	if s.submitTransactionForTest != nil {
++		return s.submitTransactionForTest(txData)
++	}
++	return s.daemon.SubmitTransaction(txData)
++}
++
+ // Start launches the full authenticated API server.
+ func (s *APIServer) Start(addr string) error {
+ 
+diff --git a/api_wallet_activity.go b/api_wallet_activity.go
+index 60f947a..72f7e2f 100644
+--- a/api_wallet_activity.go
++++ b/api_wallet_activity.go
+@@ -45,8 +45,9 @@ func (s *APIServer) handleWalletActivity(w http.ResponseWriter, r *http.Request)
+ 		writeError(w, http.StatusBadRequest, "order must be asc or desc")
+ 		return
+ 	}
+-	syncedHeight, chainHeight := loaded.SyncedHeight(), s.daemon.Chain().Height()
+-	scanning := chainHeight > syncedHeight && chainHeight-syncedHeight > uint64(MaxReorgDepth)
++	syncedHeight := loaded.SyncedHeight()
++	chainHeight, _, scanReady := walletScanTip(s.daemon.Chain(), loaded)
++	scanning := !scanReady
+ 	identity := sha256.Sum256([]byte("blocknet-wallet-activity-v1\x00" + loaded.Address()))
+ 	response := map[string]any{
+ 		"version": 1, "wallet_id": fmt.Sprintf("%x", identity),
+diff --git a/api_wallet_activity_readiness_test.go b/api_wallet_activity_readiness_test.go
+new file mode 100644
+index 0000000..dc553ec
+--- /dev/null
++++ b/api_wallet_activity_readiness_test.go
+@@ -0,0 +1,51 @@
++package main
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"path/filepath"
++	"testing"
++
++	"blocknet/wallet"
++)
++
++func TestWalletActivityScanningMatchesCanonicalTip(t *testing.T) {
++	w, err := wallet.NewWallet(filepath.Join(t.TempDir(), "disposable.wallet"), []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	chain := &Chain{}
++	tipHash := [32]byte{0xa1}
++	chain.tipSnap.Store(&tipSnapshot{height: 101, bestHash: tipHash})
++	s := NewAPIServer(&Daemon{chain: chain}, w, nil, t.TempDir(), []byte("pw"))
++	activityScanning := func() bool {
++		t.Helper()
++		rr := httptest.NewRecorder()
++		s.handleWalletActivity(rr, httptest.NewRequest(http.MethodGet, "/api/wallet/activity", nil))
++		if rr.Code != http.StatusOK {
++			t.Fatalf("activity status %d: %s", rr.Code, rr.Body.String())
++		}
++		var response struct {
++			Scanning bool `json:"scanning"`
++		}
++		if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
++			t.Fatal(err)
++		}
++		return response.Scanning
++	}
++	for _, lag := range []uint64{1, 100} {
++		w.SetSyncedTip(101-lag, [32]byte{0xb2})
++		if !activityScanning() {
++			t.Fatalf("activity reported complete with %d blocks of lag", lag)
++		}
++	}
++	w.SetSyncedTip(101, [32]byte{0xb2})
++	if !activityScanning() {
++		t.Fatal("activity reported complete on a same-height fork")
++	}
++	w.SetSyncedTip(101, tipHash)
++	if activityScanning() {
++		t.Fatal("activity reported scanning at the exact canonical tip")
++	}
++}
+diff --git a/cli.go b/cli.go
+index a2adfa8..eb8cfd7 100644
+--- a/cli.go
++++ b/cli.go
+@@ -30,12 +30,15 @@ type CLI struct {
+ 	mu              sync.RWMutex // protects wallet/scanner/passwordHash during hot-load
+ 	// scanMu owns each compound scan/reorg/tip/save step across catch-up and
+ 	// live block delivery. catchUpMu coalesces concurrent catch-up requests.
+-	scanMu          sync.Mutex
+-	catchUpMu       sync.Mutex
+-	walletFileMu    sync.RWMutex
+-	settingsMu      sync.Mutex
+-	settings        Settings
+-	runningSettings Settings
++	scanMu    sync.Mutex
++	catchUpMu sync.Mutex
++	// Nil in production; deterministic tests can change the canonical chain
++	// after catch-up fetches a block and before the wallet scans it.
++	beforeCatchUpBlockApply func(*Block)
++	walletFileMu            sync.RWMutex
++	settingsMu              sync.Mutex
++	settings                Settings
++	runningSettings         Settings
+ }
+ 
+ // CLIConfig holds CLI configuration
+@@ -298,6 +301,12 @@ func (c *CLI) shutdown() error {
+ 	// scan steps observe the canceled context and cannot mutate the wallet.
+ 	c.scanMu.Lock()
+ 	defer c.scanMu.Unlock()
++	if c.api != nil {
++		// HTTP shutdown may time out while a send is still accounting for a
++		// successful broadcast. Keep the final wallet snapshot behind its lease.
++		c.api.walletOpMu.Lock()
++		defer c.api.walletOpMu.Unlock()
++	}
+ 
+ 	fmt.Printf("\n%s\n", c.sectionHead("Shutdown"))
+ 	c.mu.RLock()
+@@ -465,15 +474,33 @@ func applyBlockToWallet(chain *Chain, w *wallet.Wallet, sc *wallet.Scanner, bloc
+ 		// changed canonical tip needs reorg reconciliation.
+ 		canonicalTip := chain.GetBlockByHeight(syncedHeight)
+ 		if canonicalTip != nil && canonicalTip.Hash() == syncedHash {
++			// A dropped newest notification can leave a wallet behind even
++			// though this older event is canonical. Use it as a wake-up.
++			if chain.Height() > syncedHeight {
++				reconcileWalletReorg(chain, w, sc)
++			}
+ 			return
+ 		}
+ 		reconcileWalletReorg(chain, w, sc)
+ 		return
+ 	}
++	// Notifications can sit in a bounded queue while the chain reorgs. A
++	// block that extends our saved tip may already be off the main chain.
++	canonical := chain.GetBlockByHeight(block.Header.Height)
++	if canonical == nil || canonical.Hash() != block.Hash() {
++		reconcileWalletReorg(chain, w, sc)
++		return
++	}
+ 	extends := block.Header.Height == syncedHeight+1 && block.Header.PrevHash == syncedHash
+ 	if extends {
+ 		sc.ScanBlock(blockToScanData(block))
+ 		w.SetSyncedTip(block.Header.Height, block.Hash())
++		// If a reorg landed during the scan, repair now. This also works when
++		// the corrective notification was dropped from the subscriber queue.
++		canonical = chain.GetBlockByHeight(block.Header.Height)
++		if canonical == nil || canonical.Hash() != block.Hash() {
++			reconcileWalletReorg(chain, w, sc)
++		}
+ 		return
+ 	}
+ 	reconcileWalletReorg(chain, w, sc)
+diff --git a/wallet_canonical_followup_test.go b/wallet_canonical_followup_test.go
+new file mode 100644
+index 0000000..c75e638
+--- /dev/null
++++ b/wallet_canonical_followup_test.go
+@@ -0,0 +1,116 @@
++package main
++
++import (
++	"context"
++	"path/filepath"
++	"testing"
++
++	"blocknet/wallet"
++)
++
++func makeForkBlocksForWalletTest(t *testing.T, chain *Chain, storage *Storage) (*Block, *Block) {
++	t.Helper()
++	genesis := chain.GetBlockByHeight(0)
++	if genesis == nil {
++		t.Fatal("missing genesis")
++	}
++	a := &Block{Header: BlockHeader{Version: 1, Height: 1, PrevHash: genesis.Hash(),
++		Timestamp: genesis.Header.Timestamp + BlockIntervalSec, Difficulty: MinDifficulty}}
++	b := &Block{Header: BlockHeader{Version: 1, Height: 1, PrevHash: genesis.Hash(),
++		Timestamp: genesis.Header.Timestamp + BlockIntervalSec + 1, Difficulty: MinDifficulty}}
++	if err := storage.CommitBlock(&BlockCommit{Block: a, Height: 1, Hash: a.Hash(), Work: 2, IsMainTip: true}); err != nil {
++		t.Fatal(err)
++	}
++	chain.mu.Lock()
++	chain.height, chain.bestHash = 1, a.Hash()
++	chain.publishTipLocked()
++	chain.mu.Unlock()
++	return a, b
++}
++
++func reorgWalletTestChain(t *testing.T, chain *Chain, storage *Storage, a, b *Block) {
++	t.Helper()
++	if err := storage.CommitReorg(&ReorgCommit{
++		Disconnect: []*Block{a}, Connect: []*Block{b},
++		NewTip: b.Hash(), NewHeight: 1, NewWork: 2,
++	}); err != nil {
++		t.Fatal(err)
++	}
++	chain.mu.Lock()
++	chain.height, chain.bestHash = 1, b.Hash()
++	chain.publishTipLocked()
++	chain.mu.Unlock()
++}
++
++func TestQueuedForwardBlockRepairsCanonicalTipWithoutCorrectionEvent(t *testing.T) {
++	chain, storage, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	a, b := makeForkBlocksForWalletTest(t, chain, storage)
++	w, err := wallet.NewWallet(filepath.Join(t.TempDir(), "disposable.wallet"), []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	w.SetSyncedTip(0, chain.GetBlockByHeight(0).Hash())
++	reorgWalletTestChain(t, chain, storage, a, b)
++	scanner := wallet.NewScanner(w, defaultScannerConfig())
++	applyBlockToWallet(chain, w, scanner, a) // stale queued notification; B is never delivered
++	if w.SyncedHeight() != 1 || w.SyncedHash() != b.Hash() {
++		t.Fatal("stale forward event did not recover the canonical tip")
++	}
++	applyBlockToWallet(chain, w, scanner, b) // a later canonical notification is harmless
++	if w.SyncedHeight() != 1 || w.SyncedHash() != b.Hash() {
++		t.Fatal("canonical correction event changed a repaired wallet tip")
++	}
++	// A subscriber may instead receive only an older canonical event after
++	// the newest notification was dropped from its bounded queue.
++	lagging, err := wallet.NewWallet(filepath.Join(t.TempDir(), "lagging.wallet"), []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	genesis := chain.GetBlockByHeight(0)
++	lagging.SetSyncedTip(0, genesis.Hash())
++	applyBlockToWallet(chain, lagging, wallet.NewScanner(lagging, defaultScannerConfig()), genesis)
++	if lagging.SyncedHeight() != 1 || lagging.SyncedHash() != b.Hash() {
++		t.Fatal("older canonical event did not recover a lagging wallet")
++	}
++}
++
++func TestCatchUpReorgBetweenFetchAndScanRepairsCanonicalTip(t *testing.T) {
++	chain, storage, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	a, b := makeForkBlocksForWalletTest(t, chain, storage)
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	path := filepath.Join(t.TempDir(), "disposable.wallet")
++	w, err := wallet.NewWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	w.SetSyncedTip(0, chain.GetBlockByHeight(0).Hash())
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	c := &CLI{ctx: ctx, cancel: cancel, daemon: d, wallet: w}
++	changed := false
++	c.beforeCatchUpBlockApply = func(block *Block) {
++		if block.Hash() != a.Hash() || changed {
++			t.Fatal("catch-up barrier saw unexpected block")
++		}
++		changed = true
++		reorgWalletTestChain(t, chain, storage, a, b)
++	}
++	s := NewAPIServer(d, w, wallet.NewScanner(w, defaultScannerConfig()), t.TempDir(), []byte("pw"))
++	s.cli = c
++	s.catchUpScan()
++	if !changed || w.SyncedHeight() != 1 || w.SyncedHash() != b.Hash() {
++		t.Fatal("catch-up retained the orphaned fetched block")
++	}
++	reloaded, err := wallet.LoadWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if reloaded.SyncedHash() != b.Hash() {
++		t.Fatal("canonical reorg repair was not durable")
++	}
++}
+-- 
+2.55.0
+

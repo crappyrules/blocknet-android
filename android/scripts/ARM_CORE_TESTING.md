@@ -1,8 +1,7 @@
-# Test the supplied ARM Android programs on a Linux x86 host
+# Test the pinned mobile Core on a Linux x86 host
 
-The test uses the **unchanged** executables from `android-test/android-test`, QEMU
-user emulation, and Android 30 Bionic libraries. It does not rebuild the core or
-replace the executable packaged in the APK. This verifies the real core API and
+The test uses a separately built mobile Core executable, QEMU user emulation,
+and Android 30 Bionic libraries. It verifies the real core API and
 cryptography; Android application lifecycle, camera, and UI need separate tests.
 
 Install `qemu-user` and `unzip`; mount commands below require root. The tested SDK
@@ -33,35 +32,32 @@ sudo mkdir -p /tmp/blocknet-arm-root/dev /tmp/blocknet-arm-root/proc \
 sudo mount --bind /dev /tmp/blocknet-arm-root/dev
 sudo mount -t proc proc /tmp/blocknet-arm-root/proc
 sudo mount --bind /sys /tmp/blocknet-arm-root/sys
-sudo cp android-test/android-test/blocknet \
-  android-test/android-test/blocknet-core-arm64-android /tmp/blocknet-arm-root/work/
+sudo cp /absolute/reviewed/mobile-build/blocknet-core-arm64-android-experimental \
+  /tmp/blocknet-arm-root/work/blocknet-core-arm64-android
 ```
 
 Create `/tmp/blocknet-arm-root/work/testdata/settings.json`:
 
 ```json
-{"wallet_file":"/work/wallets/main.wallet.dat","listen":"/ip4/127.0.0.1/tcp/0","p2p_max_inbound":0,"p2p_max_outbound":0,"chain_cache_cap":256,"seed":true,"identity_key_path":"/work/testdata/test.identity"}
+{"wallet_file":"/work/wallets/main.wallet.dat","listen":"/ip4/127.0.0.1/tcp/0","p2p_max_inbound":0,"p2p_max_outbound":0,"chain_cache_cap":256,"seed":false,"identity_key_path":"/work/testdata/test.identity"}
 ```
 
-`seed:true` lets the supplied core remain available while bootstrap peers are
-unreachable. The Android app also sets this option so local wallet operations
-work offline. The core names this option seed mode; without it, startup exits
-when every seed connection fails, even though the API briefly becomes ready.
+The mobile profile uses `BLOCKNET_MOBILE_CLIENT=1` to permit an offline start
+without enabling seed serving. It does not listen for P2P peers.
 No mining or funded transactions are performed by this test suite.
 
 Run these in a terminal:
 
 ```sh
-sudo chroot /tmp/blocknet-arm-root /qemu-aarch64 /work/blocknet version
 sudo chroot /tmp/blocknet-arm-root /qemu-aarch64 /work/blocknet-core-arm64-android --version
-sudo chroot /tmp/blocknet-arm-root /qemu-aarch64 /work/blocknet-core-arm64-android \
+sudo env BLOCKNET_MOBILE_CLIENT=1 chroot /tmp/blocknet-arm-root /qemu-aarch64 /work/blocknet-core-arm64-android \
   --data /work/testdata --testnet --api 127.0.0.1:18392
 ```
 
 Then run the API integration suite in another terminal:
 
 ```sh
-sudo python3 android/scripts/test-core-api.py \
+sudo env BLOCKNET_MOBILE_CLIENT=1 python3 android/scripts/test-core-api.py \
   --cookie /tmp/blocknet-arm-root/work/testdata/api.cookie \
   --url http://127.0.0.1:18392 --disposable-testnet \
   --restart-arm-chroot /tmp/blocknet-arm-root

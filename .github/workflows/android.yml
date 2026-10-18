@@ -30,13 +30,9 @@ concurrency:
 
 jobs:
   apk:
-    name: ARM64 APK (${{ matrix.core }})
+    name: Reviewed mobile Core APK
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        core: [supplied, activity]
     defaults:
       run:
         shell: bash
@@ -53,90 +49,91 @@ jobs:
           java-version: '17'
 
       - name: Set up Gradle and validate wrapper
-        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5 (Node 24)
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
         with:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4 (Node 24)
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
-          cmdline-tools-version: '12266719' # Preserve the validated Java 17 SDK toolchain.
+          cmdline-tools-version: '12266719'
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
-      - name: Set up Go for offline wallet reader
+      - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26.5'
           cache: false
 
-      - name: Build offline wallet reader from pinned source
+      - name: Fetch exact pinned Core revision and build offline wallet reader
         run: |
           git init "$RUNNER_TEMP/blocknet-core-source"
           git -C "$RUNNER_TEMP/blocknet-core-source" remote add origin https://github.com/blocknetprivacy/core.git
           git -C "$RUNNER_TEMP/blocknet-core-source" fetch --depth 1 origin 5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e
           git -C "$RUNNER_TEMP/blocknet-core-source" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/blocknet-core-source" rev-parse HEAD)" = 5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e
           bash android/scripts/build-offline-wallet-view.sh \
             "$RUNNER_TEMP/blocknet-core-source" "$RUNNER_TEMP/offline-wallet-view"
 
-      - name: Build activity Core from pinned source
-        if: matrix.core == 'activity'
+      - name: Build mobile Core from ordered reviewed patches
         run: |
           sdkmanager 'ndk;30.0.16248370'
           rustup toolchain install 1.89.0 --profile minimal --target aarch64-linux-android
           export RUSTUP_TOOLCHAIN=1.89.0
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/30.0.16248370"
           bash android/scripts/build-core-android.sh \
-            "$RUNNER_TEMP/blocknet-core-source" "$RUNNER_TEMP/core-activity" \
-            "$GITHUB_WORKSPACE/android/core-patches/0001-locked-wallet-activity.patch"
+            "$RUNNER_TEMP/blocknet-core-source" "$RUNNER_TEMP/core-mobile" \
+            "$GITHUB_WORKSPACE/android/core-patches/0001-locked-wallet-activity.patch" \
+            "$GITHUB_WORKSPACE/android/core-patches/0004-mobile-client-policy.patch"
 
-      - name: Test, lint, build and verify APK
-        env:
-          CORE_VARIANT: ${{ matrix.core }}
+      - name: Test, lint, package and verify mobile APK
         run: |
           cd android
           python3 -m unittest discover -s scripts -p 'test_apk_launcher.py'
           python3 -m unittest discover -s scripts -p 'test_release_checks.py'
-          gradle_args=(-PofflineWalletViewDir="$RUNNER_TEMP/offline-wallet-view")
-          verifier_args=(--offline-wallet-view-dir "$RUNNER_TEMP/offline-wallet-view")
-          if [[ "$CORE_VARIANT" == activity ]]; then
-            gradle_args+=("-PcoreActivityDir=$RUNNER_TEMP/core-activity")
-            verifier_args+=(--core-activity-dir "$RUNNER_TEMP/core-activity")
-          fi
-          ./gradlew --no-daemon "${gradle_args[@]}" testDebugUnitTest lintDebug assembleDebug
-          python3 scripts/verify-apk.py "${verifier_args[@]}"
-          mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          cp app/build/outputs/apk/debug/app-debug.apk \
-            "$GITHUB_WORKSPACE/artifacts/blocknet-wallet-arm64-$CORE_VARIANT-debug.apk"
-          cd "$GITHUB_WORKSPACE/artifacts"
+          python3 -m unittest discover -s scripts -p 'test_localization.py'
+          ./gradlew --no-daemon \
+            -PcoreMobileDir="$RUNNER_TEMP/core-mobile" \
+            -PofflineWalletViewDir="$RUNNER_TEMP/offline-wallet-view" \
+            testDebugUnitTest lintDebug assembleDebug
+          python3 scripts/verify-apk.py \
+            --core-mobile-dir "$RUNNER_TEMP/core-mobile" \
+            --offline-wallet-view-dir "$RUNNER_TEMP/offline-wallet-view"
+          mkdir -p "$GITHUB_WORKSPACE/mobile-artifacts"
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/mobile-artifacts/blocknet-wallet-arm64-mobile-debug.apk"
+          cp "$RUNNER_TEMP/core-mobile/build-provenance.json" "$GITHUB_WORKSPACE/mobile-artifacts/"
+          cp "$RUNNER_TEMP/core-mobile/mobile-client-policy.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
+          cp "$RUNNER_TEMP/core-mobile/0005-core-wallet-persistence.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
+          cp "$RUNNER_TEMP/core-mobile/0006-core-wallet-scan-serialization.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
+          cp "$RUNNER_TEMP/core-mobile/0007-core-wallet-send-readiness.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
+          cp "$RUNNER_TEMP/core-mobile/0008-core-wallet-send-reorg-activity.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
+          cp "$RUNNER_TEMP/core-mobile/0009-core-wallet-notification-overflow.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
+          cp "$RUNNER_TEMP/core-mobile/Cargo.lock" "$GITHUB_WORKSPACE/mobile-artifacts/"
+          cp "$RUNNER_TEMP/offline-wallet-view/build-provenance.json" "$GITHUB_WORKSPACE/mobile-artifacts/offline-wallet-view-build-provenance.json"
+          cd "$GITHUB_WORKSPACE/mobile-artifacts"
           sha256sum ./*.apk > SHA256SUMS
-          cp "$RUNNER_TEMP/offline-wallet-view/build-provenance.json" offline-wallet-view-build-provenance.json
-          if [[ "$CORE_VARIANT" == activity ]]; then
-            cp "$RUNNER_TEMP/core-activity/build-provenance.json" .
-          fi
 
-      - name: Upload verified APK and checksum
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (Node 24)
+      - name: Upload mobile candidate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: blocknet-wallet-arm64-${{ matrix.core }}-debug
-          path: artifacts/
+          name: blocknet-wallet-arm64-mobile-debug
+          path: mobile-artifacts/
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload test and lint reports
+      - name: Upload mobile test and lint reports
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (Node 24)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: android-reports-${{ matrix.core }}
+          name: android-reports-mobile
           path: |
             android/app/build/reports/tests/
             android/app/build/reports/lint-results-debug.*
             android/app/build/test-results/
           if-no-files-found: ignore
           retention-days: 14
-
-
   sign_release:
-    name: Owner-signed activity APK
+    name: Owner-signed mobile Core APK
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_release && startsWith(github.ref, 'refs/tags/v') && github.repository == 'crappyrules/blocknet-android' }}
     needs: apk
     runs-on: ubuntu-24.04
@@ -189,8 +186,9 @@ jobs:
           export RUSTUP_TOOLCHAIN=1.89.0
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/30.0.16248370"
           bash android/scripts/build-core-android.sh \
-            "$RUNNER_TEMP/blocknet-core-source" "$RUNNER_TEMP/core-activity" \
-            "$GITHUB_WORKSPACE/android/core-patches/0001-locked-wallet-activity.patch"
+            "$RUNNER_TEMP/blocknet-core-source" "$RUNNER_TEMP/core-mobile" \
+            "$GITHUB_WORKSPACE/android/core-patches/0001-locked-wallet-activity.patch" \
+            "$GITHUB_WORKSPACE/android/core-patches/0004-mobile-client-policy.patch"
 
       - name: Sign and verify release APK
         shell: bash
@@ -218,23 +216,24 @@ jobs:
           printf '%s' "$OWNER_KEYSTORE_BASE64" | base64 --decode > "$BLOCKNET_RELEASE_KEYSTORE"
           cd android
           ./gradlew --no-daemon \
-            -PcoreActivityDir="$RUNNER_TEMP/core-activity" \
+            -PcoreMobileDir="$RUNNER_TEMP/core-mobile" \
             -PofflineWalletViewDir="$RUNNER_TEMP/offline-wallet-view" \
             :app:assembleRelease
           apk=app/build/outputs/apk/release/app-release.apk
           python3 scripts/verify-apk.py \
-            --core-activity-dir "$RUNNER_TEMP/core-activity" \
+            --core-mobile-dir "$RUNNER_TEMP/core-mobile" \
             --offline-wallet-view-dir "$RUNNER_TEMP/offline-wallet-view" "$apk"
           python3 scripts/verify_release_metadata.py "$apk" "$GITHUB_REF_NAME"
           python3 scripts/verify_release_tag.py "$GITHUB_REF_NAME" "$GITHUB_SHA"
           mkdir -p "$GITHUB_WORKSPACE/signed-release"
           cp "$apk" "$GITHUB_WORKSPACE/signed-release/blocknet-wallet-arm64-activity-release.apk"
-          cp "$RUNNER_TEMP/core-activity/build-provenance.json" "$GITHUB_WORKSPACE/signed-release/core-activity-build-provenance.json"
+          cp "$RUNNER_TEMP/core-mobile/build-provenance.json" "$GITHUB_WORKSPACE/signed-release/core-mobile-build-provenance.json"
           cp "$RUNNER_TEMP/offline-wallet-view/build-provenance.json" "$GITHUB_WORKSPACE/signed-release/offline-wallet-view-build-provenance.json"
           printf '%s\n' "$GITHUB_SHA" > "$GITHUB_WORKSPACE/signed-release/SOURCE_COMMIT"
           (cd "$GITHUB_WORKSPACE/signed-release" && sha256sum \
-            blocknet-wallet-arm64-activity-release.apk core-activity-build-provenance.json \
+            blocknet-wallet-arm64-activity-release.apk core-mobile-build-provenance.json \
             offline-wallet-view-build-provenance.json SOURCE_COMMIT > SHA256SUMS)
+          python3 scripts/verify_signed_mobile_artifact.py "$GITHUB_WORKSPACE/signed-release"
 
       - name: Upload owner-signed release for review
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (Node 24)
@@ -281,11 +280,12 @@ jobs:
           [[ "$(cat signed-release/SOURCE_COMMIT)" == "$GITHUB_SHA" ]]
           python3 android/scripts/verify_release_metadata.py \
             signed-release/blocknet-wallet-arm64-activity-release.apk "$GITHUB_REF_NAME"
+          python3 android/scripts/verify_signed_mobile_artifact.py signed-release
           python3 android/scripts/verify_release_tag.py "$GITHUB_REF_NAME" "$GITHUB_SHA"
           gh release create "$GITHUB_REF_NAME" \
             signed-release/blocknet-wallet-arm64-activity-release.apk \
             signed-release/SHA256SUMS signed-release/SOURCE_COMMIT \
-            signed-release/core-activity-build-provenance.json \
+            signed-release/core-mobile-build-provenance.json \
             signed-release/offline-wallet-view-build-provenance.json \
             --verify-tag --prerelease --title "Blocknet Android $GITHUB_REF_NAME" \
             --notes-file android/docs/OWNER_RELEASE_NOTES.md

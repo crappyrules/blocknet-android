@@ -137,7 +137,8 @@ final class OfflineSnapshotStore {
     void save(String scope, JSONObject value) throws Exception {
         synchronized (OfflineSnapshotStore.class) {
         Session current = session;
-        if (current == null || !current.scope.equals(scope)) return;
+        if (current == null || !current.scope.equals(scope))
+            throw new IOException("Wallet saved-view session is locked");
         byte[] plain = value.toString().getBytes(StandardCharsets.UTF_8);
         byte[] raw;
         try { raw = encrypt(plain, scope, current.salt, current.key); }

@@ -1,9 +1,8 @@
 plugins { id 'com.android.application' }
 
-// Prepared successor to the published v1.0.0-preview.1 (Android versionCode 1).
-// This does not create a tag, release, or installable migration path.
-def candidateReleaseTag = 'v1.0.0-preview.2'
-def candidateVersionCode = 2
+// Owner-signed successor to v1.0.0-preview.2 (Android versionCode 2).
+def candidateReleaseTag = 'v1.0.0-preview.3'
+def candidateVersionCode = 3
 
 // Release packages require an owner-provided key and an explicitly pinned certificate.
 // Debug builds remain available for local testing; neither can be published as an update.
@@ -23,7 +22,7 @@ gradle.taskGraph.whenReady { graph ->
 }
 def releaseSigning = [:]
 if (releaseTaskRequested) {
-    if (candidateVersionCode <= 1 || !(candidateReleaseTag ==~ /v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+/))
+    if (candidateVersionCode <= 2 || !(candidateReleaseTag ==~ /v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+/))
         throw new GradleException('Release metadata must advance beyond the published preview')
     def names = ['BLOCKNET_RELEASE_KEYSTORE', 'BLOCKNET_RELEASE_STORE_PASSWORD',
                  'BLOCKNET_RELEASE_KEY_ALIAS', 'BLOCKNET_RELEASE_KEY_PASSWORD',
@@ -55,14 +54,18 @@ if (releaseTaskRequested) {
     catch (Exception error) { throw new GradleException('Release signing material could not be validated', error) }
 }
 
-// Default builds always use the supplied programs. An experimental activity API build
-// must be selected explicitly with an absolute, provenance-checked build directory.
-def activityDirArgument = providers.gradleProperty('coreActivityDir').orNull
-def activityDirectory = activityDirArgument == null ? null : new File(activityDirArgument)
-if (activityDirectory != null && (!activityDirectory.isAbsolute() || !activityDirectory.isDirectory())) {
-    throw new GradleException('coreActivityDir must name an existing absolute experimental build directory')
-}
-def coreActivityEnabled = activityDirectory != null
+// Every APK requires an explicit, provenance-checked build of the pinned mobile Core.
+if (project.hasProperty('coreActivityDir'))
+    throw new GradleException('Activity-only Core is retired; select the reviewed mobile Core')
+def mobileDirArgument = providers.gradleProperty('coreMobileDir').orNull
+def mobileDirectory = mobileDirArgument == null ? null : new File(mobileDirArgument)
+if (mobileDirectory != null && (!mobileDirectory.isAbsolute() || !mobileDirectory.isDirectory()))
+    throw new GradleException('coreMobileDir must name an existing absolute experimental build directory')
+if (mobileDirectory == null)
+    throw new GradleException('Every APK requires -PcoreMobileDir=/absolute/reviewed-mobile-build')
+def coreMobileEnabled = true
+def activityDirectory = mobileDirectory
+def coreActivityEnabled = true
 // Public owner pin. The private Ed25519 signer stays outside all repositories.
 def pinnedAnnouncementSigner = '333c7c85db80716deceb4da838b5ae3145ee4b0ed0a64966f60aa56e12972b16'
 // Dedicated mainnet announcement address KNNpZhPcJX92oAyvcVWJhQXJjsWRYsEiPHej6ZTM2LuSJBDS3VQebjUjUCzYqBnidt1JXYUiUgA69HeBoTuVuQYWwnhQN.
@@ -94,15 +97,20 @@ if (announcementReady) {
     if (!announcement.BLOCKNET_ANNOUNCEMENT_APK_CERT_SHA256.equalsIgnoreCase(pinnedOwnerReleaseCertSha256))
         throw new GradleException('Announcement APK certificate does not match the pinned owner certificate')
 }
-if (releaseTaskRequested && (!coreActivityEnabled || !announcementReady ||
+if (releaseTaskRequested && (!coreMobileEnabled || !announcementReady ||
     !announcement.BLOCKNET_ANNOUNCEMENT_APK_CERT_SHA256.equalsIgnoreCase(releaseSigning.BLOCKNET_RELEASE_CERT_SHA256)))
-    throw new GradleException('Signed release requires activity Core and a complete announcement channel bound to its certificate')
-def suppliedPrograms = file('../../android-test/android-test')
-def selectedCore = coreActivityEnabled ? new File(activityDirectory, 'blocknet-core-arm64-android-experimental') : new File(suppliedPrograms, 'blocknet-core-arm64-android')
-def activityProvenance = coreActivityEnabled ? new File(activityDirectory, 'build-provenance.json') : null
+    throw new GradleException('Signed release requires the reviewed mobile Core and a complete announcement channel bound to its certificate')
+def selectedCore = new File(activityDirectory, 'blocknet-core-arm64-android-experimental')
+def activityProvenance = new File(activityDirectory, 'build-provenance.json')
 def activityPatch = rootProject.file('core-patches/0001-locked-wallet-activity.patch')
 def activityShim = rootProject.file('core-patches/0002-android-cgo-link-flags.patch')
 def announcementPatch = rootProject.file('core-patches/0003-onchain-announcement-scan.patch')
+def mobilePatch = rootProject.file('core-patches/0004-mobile-client-policy.patch')
+def walletPersistencePatch = rootProject.file('core-patches/0005-core-wallet-persistence.patch')
+def walletScanPatch = rootProject.file('core-patches/0006-core-wallet-scan-serialization.patch')
+def walletReadinessPatch = rootProject.file('core-patches/0007-core-wallet-send-readiness.patch')
+def walletFollowupPatch = rootProject.file('core-patches/0008-core-wallet-send-reorg-activity.patch')
+def walletOverflowPatch = rootProject.file('core-patches/0009-core-wallet-notification-overflow.patch')
 def offlineViewArgument = providers.gradleProperty('offlineWalletViewDir').orNull
 def offlineViewDirectory = offlineViewArgument == null ? null : new File(offlineViewArgument)
 def offlineViewBinary = offlineViewDirectory == null ? null : new File(offlineViewDirectory, 'blocknet-wallet-view-arm64-android')
@@ -114,6 +122,13 @@ def validateActivity = {
                     new File(activityDirectory, 'Cargo.lock'), new File(activityDirectory, 'applied.patch'),
                     new File(activityDirectory, 'android-cgo-link-flags.patch'),
                     new File(activityDirectory, 'onchain-announcement-scan.patch')]
+    if (coreMobileEnabled) required += [mobilePatch, new File(activityDirectory, 'mobile-client-policy.patch'),
+        walletPersistencePatch, walletScanPatch, walletReadinessPatch, walletFollowupPatch, walletOverflowPatch,
+        new File(activityDirectory, walletPersistencePatch.name),
+        new File(activityDirectory, walletScanPatch.name),
+        new File(activityDirectory, walletReadinessPatch.name),
+        new File(activityDirectory, walletFollowupPatch.name),
+        new File(activityDirectory, walletOverflowPatch.name)]
     required.each { if (!it.isFile()) throw new GradleException("Missing experimental Core build input: $it") }
     def provenance
     try { provenance = new groovy.json.JsonSlurper().parse(activityProvenance) }
@@ -124,10 +139,15 @@ def validateActivity = {
         throw new GradleException('Experimental Core provenance must identify the reviewed activity API baseline')
     }
     def expected = [binary_sha256: selectedCore,
-                    original_binary_sha256: new File(suppliedPrograms, 'blocknet-core-arm64-android'),
                     patch_sha256: activityPatch, android_link_shim_sha256: activityShim,
                     announcement_scan_patch_sha256: announcementPatch,
                     cargo_lock_sha256: file('../core-patches/core-activity.Cargo.lock')]
+    if (coreMobileEnabled) expected += [mobile_client_patch_sha256: mobilePatch,
+        wallet_persistence_patch_sha256: walletPersistencePatch,
+        wallet_scan_patch_sha256: walletScanPatch,
+        wallet_send_readiness_patch_sha256: walletReadinessPatch,
+        wallet_followup_patch_sha256: walletFollowupPatch,
+        wallet_notification_overflow_patch_sha256: walletOverflowPatch]
     expected.each { field, input ->
         if (!(provenance[field] instanceof String) || !(provenance[field] ==~ /[0-9a-f]{64}/) || provenance[field] != sha256(input))
             throw new GradleException("Experimental Core provenance $field does not match $input")
@@ -137,6 +157,17 @@ def validateActivity = {
         sha256(new File(activityDirectory, 'onchain-announcement-scan.patch')) != provenance.announcement_scan_patch_sha256 ||
         sha256(new File(activityDirectory, 'Cargo.lock')) != provenance.cargo_lock_sha256)
         throw new GradleException('Experimental build patch copies differ from the reviewed source patches')
+    if (coreMobileEnabled && (provenance.mobile_client_capability != 1 ||
+        provenance.patch_order != ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', walletPersistencePatch.name, walletScanPatch.name, walletReadinessPatch.name, walletFollowupPatch.name, walletOverflowPatch.name] ||
+        sha256(new File(activityDirectory, 'mobile-client-policy.patch')) != provenance.mobile_client_patch_sha256 ||
+        sha256(new File(activityDirectory, walletPersistencePatch.name)) != provenance.wallet_persistence_patch_sha256 ||
+        sha256(new File(activityDirectory, walletScanPatch.name)) != provenance.wallet_scan_patch_sha256 ||
+        sha256(new File(activityDirectory, walletReadinessPatch.name)) != provenance.wallet_send_readiness_patch_sha256 ||
+        sha256(new File(activityDirectory, walletFollowupPatch.name)) != provenance.wallet_followup_patch_sha256 ||
+        sha256(new File(activityDirectory, walletOverflowPatch.name)) != provenance.wallet_notification_overflow_patch_sha256))
+        throw new GradleException('Mobile Core capability or ordered patch provenance is invalid')
+    if (!coreMobileEnabled && provenance.mobile_client_patch_sha256 != null)
+        throw new GradleException('Activity variant unexpectedly contains mobile Core patch')
 }
 validateActivity()
 def validateOfflineView = {
@@ -160,29 +191,46 @@ def validateOfflineView = {
 def bundledNative = layout.buildDirectory.dir('generated/blocknetNative')
 def activityAssets = layout.buildDirectory.dir('generated/blocknetCoreActivityAssets')
 tasks.register('prepareBlocknetBinaries') {
-    inputs.files(new File(suppliedPrograms, 'blocknet'), new File(suppliedPrograms, 'blocknet-core-arm64-android'), selectedCore, activityPatch, activityShim, announcementPatch)
+    inputs.files(selectedCore, activityPatch, activityShim, announcementPatch)
+    if (coreMobileEnabled) inputs.files(mobilePatch, new File(activityDirectory, 'mobile-client-policy.patch'),
+        walletPersistencePatch, walletScanPatch, walletReadinessPatch, walletFollowupPatch, walletOverflowPatch,
+        new File(activityDirectory, walletPersistencePatch.name), new File(activityDirectory, walletScanPatch.name),
+        new File(activityDirectory, walletReadinessPatch.name), new File(activityDirectory, walletFollowupPatch.name),
+        new File(activityDirectory, walletOverflowPatch.name))
     if(offlineViewDirectory != null) inputs.files(offlineViewBinary,offlineViewProvenance)
     inputs.files(rootProject.file('offline-wallet-view/main.go'),rootProject.file('offline-wallet-view/main_test.go'))
     if (coreActivityEnabled) inputs.files(activityProvenance, new File(activityDirectory, 'Cargo.lock'), new File(activityDirectory, 'applied.patch'), new File(activityDirectory, 'android-cgo-link-flags.patch'), new File(activityDirectory, 'onchain-announcement-scan.patch'))
     inputs.property('coreActivityEnabled', coreActivityEnabled)
+    inputs.property('coreMobileEnabled', coreMobileEnabled)
     outputs.dir(bundledNative)
     outputs.dir(activityAssets)
     doLast {
         validateActivity()
         validateOfflineView()
-        [new File(suppliedPrograms, 'blocknet'), selectedCore].each {
+        [selectedCore].each {
             if (!it.isFile()) throw new GradleException("Required Android executable is missing: $it")
         }
         project.delete(bundledNative.get().asFile, activityAssets.get().asFile)
         def nativeDirectory = bundledNative.get().dir('arm64-v8a').asFile
         nativeDirectory.mkdirs()
         activityAssets.get().asFile.mkdirs()
-        project.copy { from new File(suppliedPrograms, 'blocknet'); into nativeDirectory; rename { 'libmantle.so' } }
         project.copy { from selectedCore; into nativeDirectory; rename { 'libblocknet_core.so' } }
         project.copy { from offlineViewBinary; into nativeDirectory; rename { 'libblocknet_walletview.so' } }
         project.copy { from offlineViewProvenance; into activityAssets.get().asFile; rename { 'offline-wallet-view-build-provenance.json' } }
-        if (coreActivityEnabled) project.copy { from activityProvenance; into activityAssets.get().asFile; rename { 'core-activity-build-provenance.json' } }
+        if (coreActivityEnabled) project.copy { from activityProvenance; into activityAssets.get().asFile; rename { coreMobileEnabled ? 'core-mobile-build-provenance.json' : 'core-activity-build-provenance.json' } }
     }
+}
+
+if (project.hasProperty('addressBookIntegration') && project.hasProperty('isolatedDeviceIntegration')) {
+    throw new GradleException('Choose one isolated instrumentation runner')
+}
+def addressBookSidecar = project.hasProperty('addressBookIntegration') || project.hasProperty('isolatedDeviceIntegration')
+if (addressBookSidecar && project.findProperty('isolatedTestApplicationId') != 'com.blocknet.wallet.offlinetest') {
+    throw new GradleException('Isolated instrumentation requires -PisolatedTestApplicationId=com.blocknet.wallet.offlinetest')
+}
+def sidecarVersion = providers.gradleProperty('isolatedTestVersionCode').orNull ?: '2'
+if (addressBookSidecar && !(sidecarVersion in ['2','3'])) {
+    throw new GradleException('Isolated address-book test version must be 2 or 3')
 }
 
 android {
@@ -190,18 +238,18 @@ android {
     compileSdk 36
     buildToolsVersion '36.0.0'
     defaultConfig {
-        applicationId 'com.blocknet.wallet'
+        applicationId addressBookSidecar ? 'com.blocknet.wallet.offlinetest' : 'com.blocknet.wallet'
         minSdk 26
         targetSdk 36
-        versionCode candidateVersionCode
-        versionName candidateReleaseTag.substring(1)
+        versionCode addressBookSidecar ? sidecarVersion.toInteger() : candidateVersionCode
+        versionName candidateReleaseTag.substring(1) + (addressBookSidecar ? '-offline-test' : '')
         // Update this tag alongside the next published preview release.
         buildConfigField 'String', 'RELEASE_TAG', '"' + candidateReleaseTag + '"'
-        testInstrumentationRunner project.hasProperty('activityIntegration') ? 'com.blocknet.wallet.WalletActivityInstrumentation' : project.hasProperty('cameraIntegration') ? 'com.blocknet.wallet.WalletCameraInstrumentation' : project.hasProperty('notificationIntegration') ? 'com.blocknet.wallet.WalletNotificationInstrumentation' : project.hasProperty('shortnameIntegration') ? 'com.blocknet.wallet.ShortnameVerificationInstrumentation' : project.hasProperty('biometricIntegration') ? 'com.blocknet.wallet.WalletBiometricInstrumentation' : project.hasProperty('networkIntegration') ? 'com.blocknet.wallet.WalletNetworkInstrumentation' : project.hasProperty('identityIntegration') ? 'com.blocknet.wallet.WalletIdentityInstrumentation' : project.hasProperty('checkpointIntegration') ? 'com.blocknet.wallet.WalletCheckpointInstrumentation' : project.hasProperty('deviceIntegration') ? 'com.blocknet.wallet.WalletDeviceInstrumentation' : project.hasProperty('apiIntegration') ? 'com.blocknet.wallet.WalletApiInstrumentation' : 'com.blocknet.wallet.WalletSmokeInstrumentation'
+        testInstrumentationRunner project.hasProperty('isolatedDeviceIntegration') ? 'com.blocknet.wallet.WalletDeviceInstrumentation' : project.hasProperty('languageIntegration') ? 'com.blocknet.wallet.WalletLanguageInstrumentation' : project.hasProperty('addressBookIntegration') ? 'com.blocknet.wallet.AddressBookKeystoreInstrumentation' : project.hasProperty('activityIntegration') ? 'com.blocknet.wallet.WalletActivityInstrumentation' : project.hasProperty('cameraIntegration') ? 'com.blocknet.wallet.WalletCameraInstrumentation' : project.hasProperty('notificationIntegration') ? 'com.blocknet.wallet.WalletNotificationInstrumentation' : project.hasProperty('shortnameIntegration') ? 'com.blocknet.wallet.ShortnameVerificationInstrumentation' : project.hasProperty('biometricIntegration') ? 'com.blocknet.wallet.WalletBiometricInstrumentation' : project.hasProperty('networkIntegration') ? 'com.blocknet.wallet.WalletNetworkInstrumentation' : project.hasProperty('identityIntegration') ? 'com.blocknet.wallet.WalletIdentityInstrumentation' : project.hasProperty('checkpointIntegration') ? 'com.blocknet.wallet.WalletCheckpointInstrumentation' : project.hasProperty('deviceIntegration') ? 'com.blocknet.wallet.WalletDeviceInstrumentation' : project.hasProperty('apiIntegration') ? 'com.blocknet.wallet.WalletApiInstrumentation' : 'com.blocknet.wallet.WalletSmokeInstrumentation'
         ndk { abiFilters 'arm64-v8a' }
-        buildConfigField 'String', 'CORE_VERSION', coreActivityEnabled ? '"0.22.0-activity1"' : '"0.22.0"'
+        buildConfigField 'String', 'CORE_VERSION', coreMobileEnabled ? '"0.22.0-mobile1"' : coreActivityEnabled ? '"0.22.0-activity1"' : '"0.22.0"'
         buildConfigField 'boolean', 'CORE_ACTIVITY_API', coreActivityEnabled.toString()
-        buildConfigField 'String', 'MANTLE_VERSION', '"1.2.0"'
+        buildConfigField 'boolean', 'CORE_MOBILE_CLIENT', coreMobileEnabled.toString()
         buildConfigField 'boolean', 'ANNOUNCEMENT_ENABLED', (coreActivityEnabled && announcementReady).toString()
         buildConfigField 'String', 'ANNOUNCEMENT_PRIMARY_PUB', '"' + pinnedAnnouncementSigner + '"'
         buildConfigField 'String', 'ANNOUNCEMENT_VIEW_PRIV', '"' + (announcementReady ? pinnedAnnouncementViewPriv : '') + '"'
@@ -229,7 +277,7 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
-            keepDebugSymbols += ['**/libmantle.so', '**/libblocknet_core.so', '**/libblocknet_walletview.so']
+            keepDebugSymbols += ['**/libblocknet_core.so', '**/libblocknet_walletview.so']
         }
     }
     buildTypes {

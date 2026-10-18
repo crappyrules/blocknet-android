@@ -30,19 +30,15 @@ public final class WalletIdentityInstrumentation extends Instrumentation {
             byte[] bytes=response.toString().getBytes(StandardCharsets.UTF_8);OutputStream out=socket.getOutputStream();out.write(("HTTP/1.1 "+code+" Test\r\nContent-Type: application/json\r\nContent-Length: "+bytes.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));out.write(bytes);out.flush();
         }catch(Exception e){if(running)running=false;}
     }
-    private void capture(File root,File file,Map<String,byte[]> saved)throws Exception{
-        if(!file.exists())return;if(file.isDirectory()){File[] children=file.listFiles();if(children==null)throw new IOException("Cannot preserve config");for(File child:children)capture(root,child,saved);}else saved.put(root.toPath().relativize(file.toPath()).toString(),Files.readAllBytes(file.toPath()));
-    }
-    private void removeOwnedConfig(File file)throws Exception{if(!file.exists())return;if(file.isDirectory()){File[] children=file.listFiles();if(children==null)throw new IOException("Cannot inspect config");for(File child:children)removeOwnedConfig(child);}if(!file.delete())throw new IOException("Cannot restore config");}
     @Override public void onStart(){
         Bundle result=new Bundle();boolean success=false,ownsFixture=false;runtime=NativeRuntime.get(getTargetContext());WalletRepository repo=new WalletRepository(getTargetContext());
-        Map<String,?> prefs=new HashMap<>(runtime.prefs.getAll());Map<String,byte[]> config=new HashMap<>();File mantle=new File(runtime.root,"mantle");boolean mantleExisted=mantle.exists();byte[] cookie=null;boolean cookieExisted=runtime.cookie().exists();byte[] previousPid=null;boolean pidExisted=runtime.pidFile().exists();
+        Map<String,?> prefs=new HashMap<>(runtime.prefs.getAll());byte[] cookie=null;boolean cookieExisted=runtime.cookie().exists();byte[] previousPid=null;boolean pidExisted=runtime.pidFile().exists();
         boolean dataExisted=runtime.dataDir().exists(),walletDirectoryExisted=new File(runtime.networkDir(),"wallets").exists();
         try{
             check(android.os.Build.HARDWARE.equals("ranchu")||android.os.Build.HARDWARE.equals("goldfish"),"Failure injection is restricted to an Android emulator");
             check(runtime.network().equals("mainnet")&&!runtime.alive(),"Mainnet selected and no real core is running");
             check(!repo.hasPendingSend()&&!runtime.prefs.contains("wallet-change.mainnet"),"No existing wallet operation or payment is affected");
-            capture(mantle,mantle,config);if(cookieExisted)cookie=Files.readAllBytes(runtime.cookie().toPath());if(pidExisted)previousPid=Files.readAllBytes(runtime.pidFile().toPath());ownsFixture=true;
+            if(cookieExisted)cookie=Files.readAllBytes(runtime.cookie().toPath());if(pidExisted)previousPid=Files.readAllBytes(runtime.pidFile().toPath());ownsFixture=true;
             server=new ServerSocket(0,4,InetAddress.getByName("127.0.0.1"));runtime.prefs.edit().putInt("port.mainnet",server.getLocalPort()).commit();runtime.dataDir().mkdirs();Files.write(runtime.cookie().toPath(),"fake-loopback-test-token".getBytes(StandardCharsets.US_ASCII));running=true;thread=new Thread(this::serve,"wallet-identity-fake-api");thread.start();
             String name="identity_"+UUID.randomUUID().toString().replace("-","").substring(0,12);
             boolean failed=false;try{repo.create(name,"failure-injection-password");}catch(WalletApi.ApiException expected){failed=expected.status==500;}
@@ -65,7 +61,6 @@ public final class WalletIdentityInstrumentation extends Instrumentation {
                 File wallets=new File(runtime.networkDir(),"wallets");
                 if(!walletDirectoryExisted&&wallets.exists()&&Objects.requireNonNull(wallets.list()).length==0)Files.delete(wallets.toPath());
                 if(!dataExisted&&runtime.dataDir().exists()&&Objects.requireNonNull(runtime.dataDir().list()).length==0)Files.delete(runtime.dataDir().toPath());
-                removeOwnedConfig(mantle);if(mantleExisted)mantle.mkdirs();for(Map.Entry<String,byte[]> e:config.entrySet()){File f=new File(mantle,e.getKey());f.getParentFile().mkdirs();Files.write(f.toPath(),e.getValue());android.system.Os.chmod(f.getPath(),0600);}
                 SharedPreferences.Editor edit=runtime.prefs.edit();for(String key:new String[]{"port.mainnet","active.mainnet","wallet-change.mainnet"}){Object old=prefs.get(key);if(old==null)edit.remove(key);else if(old instanceof Integer)edit.putInt(key,(Integer)old);else edit.putString(key,(String)old);}if(!edit.commit())throw new IOException("Preference restore failed");
             }catch(Exception cleanup){success=false;result.putString("stream","FAIL fixture cleanup ("+cleanup.getClass().getSimpleName()+").\n");}
         }

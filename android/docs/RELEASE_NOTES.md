@@ -1,8 +1,13 @@
-## Blocknet Android wallet preview
+## Historical debug-signed Blocknet Android previews
+
+These notes describe the debug-signed previews published before
+`v1.0.0-preview.2`. Preview.2 introduced the owner certificate; a newer APK
+with the same package name and certificate can update it in place. See the
+[current owner-signed release notes](OWNER_RELEASE_NOTES.md).
 
 A native ARM64 Android wallet for Blocknet mainnet. Requires Android 8 or newer.
 
-### BACK UP BEFORE ANY UPGRADE — EXISTING WALLET DATA IS AT RISK
+### Migration from these debug-signed APKs
 
 Published preview APKs used disposable signing certificates, including different
 certificates for the supplied and activity variants. Android rejects an in-place

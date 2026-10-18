@@ -4,6 +4,9 @@ import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters;
 import org.bouncycastle.crypto.signers.Ed25519Signer;
 import org.junit.Test;
 import java.nio.charset.StandardCharsets;
+import java.io.IOException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import static org.junit.Assert.*;
 
 public class ShortnameResolverTest {
@@ -39,5 +42,31 @@ public class ShortnameResolverTest {
         assertFalse(ShortnameResolver.verifySignature(new byte[32],null,new byte[64]));
         assertFalse(ShortnameResolver.verifySignature(new byte[32],"x",null));
         assertFalse(ShortnameResolver.verifySignature(new byte[32],"x",new byte[63]));
+    }
+    @Test public void slowStreamDeadlineDisconnectsAndFailsClosed() throws Exception {
+        CountDownLatch disconnected=new CountDownLatch(1);
+        ShortnameResolver.RequestGuard guard=new ShortnameResolver.RequestGuard(ShortnameResolver.cancellationEpoch(),
+            System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(40),disconnected::countDown);
+        try{
+            assertTrue(disconnected.await(2,TimeUnit.SECONDS));
+            try{guard.check();fail("timed-out lookup was accepted");}catch(IOException expected){assertTrue(expected.getMessage().contains("timed out"));}
+        }finally{guard.finish();}
+    }
+    @Test public void walletLockCancellationDisconnectsAndFailsClosed() throws Exception {
+        CountDownLatch disconnected=new CountDownLatch(1);
+        ShortnameResolver.RequestGuard guard=new ShortnameResolver.RequestGuard(ShortnameResolver.cancellationEpoch(),
+            System.nanoTime()+TimeUnit.SECONDS.toNanos(2),disconnected::countDown);
+        try{
+            guard.cancel(false);
+            assertTrue(disconnected.await(1,TimeUnit.SECONDS));
+            try{guard.check();fail("cancelled lookup was accepted");}catch(IOException expected){assertTrue(expected.getMessage().contains("cancelled"));}
+        }finally{guard.finish();}
+    }
+    @Test public void cancelledWorkerTokenCannotStartAResolverRequest() throws Exception {
+        int queuedLookupEpoch=ShortnameResolver.cancellationEpoch();
+        ShortnameResolver.cancelActive();
+        try{ShortnameResolver.requireEpoch(queuedLookupEpoch);fail("queued lookup survived wallet lock");}
+        catch(IOException expected){assertTrue(expected.getMessage().contains("cancelled"));}
+        ShortnameResolver.requireEpoch(ShortnameResolver.cancellationEpoch());
     }
 }

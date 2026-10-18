@@ -1,0 +1,655 @@
+diff --git a/api_handlers.go b/api_handlers.go
+index a472492..5299949 100644
+--- a/api_handlers.go
++++ b/api_handlers.go
+@@ -2587,6 +2587,10 @@ func (s *APIServer) handleMiningStatus(w http.ResponseWriter, r *http.Request) {
+ // handleMiningStart starts the miner.
+ // POST /api/mining/start
+ func (s *APIServer) handleMiningStart(w http.ResponseWriter, r *http.Request) {
++	if s.daemon.node.MobileClient() {
++		writeError(w, http.StatusForbidden, "mining is disabled in mobile client mode")
++		return
++	}
+ 	if s.daemon.IsMining() {
+ 		writeError(w, http.StatusConflict, "mining already running")
+ 		return
+diff --git a/cli.go b/cli.go
+index 20fe1d9..d37df10 100644
+--- a/cli.go
++++ b/cli.go
+@@ -97,6 +97,13 @@ func defaultScannerConfig() wallet.ScannerConfig {
+ 
+ // NewCLI creates and initializes the CLI
+ func NewCLI(cfg CLIConfig) (*CLI, error) {
++	mobileMode := os.Getenv("BLOCKNET_MOBILE_CLIENT")
++	if mobileMode != "" && mobileMode != "0" && mobileMode != "1" {
++		return nil, fmt.Errorf("invalid BLOCKNET_MOBILE_CLIENT value")
++	}
++	if mobileMode == "1" && cfg.Settings.Seed {
++		return nil, fmt.Errorf("mobile client cannot serve as a seed")
++	}
+ 	ctx, cancel := context.WithCancel(context.Background())
+ 
+ 	st := cfg.Settings
+@@ -117,6 +124,8 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
+ 		P2PMaxInbound:     st.P2PMaxInbound,
+ 		P2PMaxOutbound:    st.P2PMaxOutbound,
+ 		SeedMode:          st.Seed,
++		MobileClient:      mobileMode == "1",
++		AllowOfflineStart: mobileMode == "1",
+ 		ExplorerAddr:      st.ExplorerAddr,
+ 		SaveCheckpoints:   st.SaveCheckpoints,
+ 		FullSync:          st.FullSync || params.IsTestnet,
+diff --git a/daemon.go b/daemon.go
+index 3e88add..837be86 100644
+--- a/daemon.go
++++ b/daemon.go
+@@ -205,9 +205,11 @@ type DaemonConfig struct {
+ 	SeedNodes         []string
+ 	P2PWhitelistPeers []string
+ 	// Optional P2P peer limits (0 uses p2p defaults)
+-	P2PMaxInbound  int
+-	P2PMaxOutbound int
+-	SeedMode       bool
++	P2PMaxInbound     int
++	P2PMaxOutbound    int
++	SeedMode          bool
++	MobileClient      bool
++	AllowOfflineStart bool
+ 
+ 	// Mining
+ 	EnableMining bool
+@@ -261,6 +263,9 @@ func DefaultDaemonConfig() DaemonConfig {
+ // NewDaemon creates a new blockchain daemon
+ // If stealthKeys is nil, new keys are generated
+ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
++	if cfg.MobileClient && (cfg.SeedMode || cfg.EnableMining) {
++		return nil, fmt.Errorf("mobile client cannot seed or mine")
++	}
+ 	ctx, cancel := context.WithCancel(context.Background())
+ 
+ 	// Use provided keys or generate new ones
+@@ -389,6 +394,8 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
+ 		nodeCfg.MaxOutbound = cfg.P2PMaxOutbound
+ 	}
+ 	nodeCfg.SeedMode = cfg.SeedMode
++	nodeCfg.MobileClient = cfg.MobileClient
++	nodeCfg.AllowOfflineStart = cfg.AllowOfflineStart
+ 	nodeCfg.Identity.KeyPath = cfg.IdentityKeyPath
+ 
+ 	node, err := p2p.NewNode(nodeCfg)
+@@ -568,7 +575,7 @@ func (d *Daemon) Start() error {
+ 	}
+ 
+ 	// Start peer ID endpoint for seed nodes
+-	if d.seedMode && len(d.listenAddrs) > 0 {
++	if d.seedMode && !d.node.MobileClient() && len(d.listenAddrs) > 0 {
+ 		port := peerIDPortFromMultiaddr(d.listenAddrs[0])
+ 		d.peerIDServer = startPeerIDServer(d.node, port)
+ 		log.Printf("Peer ID endpoint listening on :%d", port)
+@@ -617,6 +624,9 @@ func (d *Daemon) Stop() error {
+ 
+ // StartMining begins mining blocks
+ func (d *Daemon) StartMining() {
++	if d.node.MobileClient() {
++		return
++	}
+ 	blockChan := make(chan *Block, 10)
+ 
+ 	go func() {
+diff --git a/mobile_client_test.go b/mobile_client_test.go
+new file mode 100644
+index 0000000..65dd1f7
+--- /dev/null
++++ b/mobile_client_test.go
+@@ -0,0 +1,89 @@
++package main
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"blocknet/p2p"
++)
++
++func TestMobileClientRejectsMining(t *testing.T) {
++	for _, cfg := range []DaemonConfig{
++		{MobileClient: true, EnableMining: true},
++		{MobileClient: true, SeedMode: true},
++	} {
++		if _, err := NewDaemon(cfg, nil); err == nil {
++			t.Fatalf("mobile configuration accepted mining or seed mode: %+v", cfg)
++		}
++	}
++	nodeCfg := p2p.DefaultNodeConfig()
++	nodeCfg.MobileClient = true
++	node, err := p2p.NewNode(nodeCfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer func() { _ = node.Stop() }()
++	daemon := &Daemon{node: node}
++	daemon.StartMining() // Must return before accessing an uninitialized miner.
++	server := &APIServer{daemon: daemon}
++	response := httptest.NewRecorder()
++	server.handleMiningStart(response, httptest.NewRequest(http.MethodPost, "/api/mining/start", nil))
++	if response.Code != http.StatusForbidden {
++		t.Fatalf("mobile mining route returned %d: %s", response.Code, response.Body.String())
++	}
++}
++
++func TestMobileSettingsRemainOlderCoreCompatible(t *testing.T) {
++	dir := t.TempDir()
++	settings := defaultSettings()
++	settings.Seed = false
++	if err := saveSettings(dir, settings); err != nil {
++		t.Fatal(err)
++	}
++	data, err := os.ReadFile(filepath.Join(dir, settingsFilename))
++	if err != nil {
++		t.Fatal(err)
++	}
++	var fields map[string]json.RawMessage
++	if err := json.Unmarshal(data, &fields); err != nil {
++		t.Fatal(err)
++	}
++	// The pinned older Core rejects unknown JSON fields. The mobile policy is
++	// supplied by the child-process environment, never saved in this file.
++	for _, name := range []string{"mobile_client", "allow_offline_start"} {
++		if _, found := fields[name]; found {
++			t.Fatalf("persistent setting %q breaks rollback", name)
++		}
++	}
++	if _, _, err := loadSettings(dir); err != nil {
++		t.Fatalf("older settings contract rejected file: %v", err)
++	}
++}
++
++func TestMobileDaemonNoListenerOrSeedHTTPAndRestartsDurably(t *testing.T) {
++	dir := t.TempDir()
++	cfg := DaemonConfig{DataDir: dir, ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
++		MobileClient: true, AllowOfflineStart: true, FullSync: true}
++	for attempt := 0; attempt < 2; attempt++ {
++		daemon, err := NewDaemon(cfg, nil)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if err := daemon.Start(); err != nil {
++			t.Fatal(err)
++		}
++		if len(daemon.node.Host().Network().ListenAddresses()) != 0 || daemon.peerIDServer != nil {
++			t.Fatal("mobile daemon opened a P2P or peer-ID listener")
++		}
++		if !daemon.chain.HasGenesis() {
++			t.Fatal("chain state missing after restart")
++		}
++		if err := daemon.Stop(); err != nil {
++			t.Fatal(err)
++		}
++	}
++}
+diff --git a/p2p/mobile_client_test.go b/p2p/mobile_client_test.go
+new file mode 100644
+index 0000000..b9e982f
+--- /dev/null
++++ b/p2p/mobile_client_test.go
+@@ -0,0 +1,238 @@
++package p2p
++
++import (
++	"context"
++	"encoding/json"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"blocknet/protocol/params"
++	"github.com/libp2p/go-libp2p/core/network"
++	"github.com/libp2p/go-libp2p/core/peer"
++)
++
++// The desktop opens every stream over the connection that the mobile node dialed.
++// A no-listen host alone would not stop requests on that connection.
++func TestMobileClientOutboundConnectionDoesNotServe(t *testing.T) {
++	cfg := DefaultNodeConfig()
++	cfg.MobileClient = true
++	cfg.AllowOfflineStart = true
++	cfg.SeedNodes = nil
++	mobile, err := NewNode(cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer func() { _ = mobile.Stop() }()
++	desktop := mustNewTestNode(t)
++	defer func() { _ = desktop.Stop() }()
++	if got := len(mobile.host.Network().ListenAddresses()); got != 0 {
++		t.Fatalf("mobile host has %d listen addresses", got)
++	}
++	if got := len(mobile.Addrs()); got != 0 {
++		t.Fatalf("mobile host advertises %d addresses", got)
++	}
++	mustConnectNodes(t, mobile, desktop)
++	if got := len(desktop.host.Network().ConnsToPeer(mobile.PeerID())); got != 1 {
++		t.Fatalf("expected one phone-initiated connection, got %d", got)
++	}
++
++	var served atomic.Int32
++	var accepted atomic.Int32
++	status := ChainStatus{Height: 3, TotalWork: 3, NetworkID: params.NetworkID, ChainID: params.ChainID}
++	mobileSync := NewSyncManager(mobile, SyncConfig{
++		GetStatus:         func() ChainStatus { return status },
++		GetHeaders:        func(uint64, int) ([][]byte, error) { served.Add(1); return [][]byte{[]byte("header")}, nil },
++		GetBlocks:         func([][32]byte) ([][]byte, error) { served.Add(1); return [][]byte{[]byte("block")}, nil },
++		GetBlocksByHeight: func(uint64, int) ([][]byte, error) { served.Add(1); return [][]byte{[]byte("block")}, nil },
++		GetMempool:        func() [][]byte { served.Add(1); return [][]byte{[]byte("tx")} },
++		ProcessBlock:      func([]byte) error { accepted.Add(1); return nil },
++	})
++	mobileSync.ctx = context.Background()
++	mobile.host.SetStreamHandler(protocolID(params.ProtocolSync), mobileSync.HandleStream)
++	requests := []struct {
++		name string
++		typ  byte
++		data []byte
++	}{
++		{"headers", SyncMsgGetHeaders, []byte(`{"start_height":0,"max_headers":1}`)},
++		{"blocks", SyncMsgGetBlocks, []byte(`{"hashes":[]}`)},
++		{"blocks_by_height", SyncMsgGetBlocksByHeight, []byte(`{"start_height":0,"max_blocks":1}`)},
++		{"mempool", SyncMsgGetMempool, nil},
++	}
++	for _, req := range requests {
++		t.Run(req.name, func(t *testing.T) {
++			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++			defer cancel()
++			stream, err := desktop.host.NewStream(ctx, mobile.PeerID(), protocolID(params.ProtocolSync))
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer stream.Close()
++			_ = stream.SetDeadline(time.Now().Add(2 * time.Second))
++			if err := writeMessage(stream, req.typ, req.data); err != nil {
++				t.Fatal(err)
++			}
++			if typ, data, err := readSyncMessage(stream); err == nil {
++				t.Fatalf("mobile served response type %d with %d bytes", typ, len(data))
++			}
++		})
++	}
++	if got := served.Load(); got != 0 {
++		t.Fatalf("served %d data requests", got)
++	}
++
++	t.Run("get_peers", func(t *testing.T) {
++		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++		defer cancel()
++		stream, err := desktop.host.NewStream(ctx, mobile.PeerID(), protocolID(params.ProtocolPEX))
++		if err != nil {
++			t.Fatal(err)
++		}
++		defer stream.Close()
++		_ = stream.SetDeadline(time.Now().Add(2 * time.Second))
++		if err := writeMessage(stream, PEXMsgGetPeers, nil); err != nil {
++			t.Fatal(err)
++		}
++		if typ, data, err := readPEXMessage(stream); err == nil {
++			t.Fatalf("mobile served PEX type %d with %d bytes", typ, len(data))
++		}
++	})
++
++	t.Run("status_reply", func(t *testing.T) {
++		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++		defer cancel()
++		stream, err := desktop.host.NewStream(ctx, mobile.PeerID(), protocolID(params.ProtocolSync))
++		if err != nil {
++			t.Fatal(err)
++		}
++		defer stream.Close()
++		_ = stream.SetDeadline(time.Now().Add(2 * time.Second))
++		data, _ := json.Marshal(status)
++		if err := writeMessage(stream, SyncMsgStatus, data); err != nil {
++			t.Fatal(err)
++		}
++		typ, data, err := readSyncMessage(stream)
++		if err != nil || typ != SyncMsgStatus {
++			t.Fatalf("status reply: type=%d err=%v", typ, err)
++		}
++		var got ChainStatus
++		if err := json.Unmarshal(data, &got); err != nil || got.Height != status.Height {
++			t.Fatalf("wrong status reply: %+v, %v", got, err)
++		}
++	})
++
++	t.Run("new_block_ingress", func(t *testing.T) {
++		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++		defer cancel()
++		stream, err := desktop.host.NewStream(ctx, mobile.PeerID(), protocolID(params.ProtocolSync))
++		if err != nil {
++			t.Fatal(err)
++		}
++		_ = stream.SetDeadline(time.Now().Add(2 * time.Second))
++		if err := writeMessage(stream, SyncMsgNewBlock, []byte("unfunded-test-block")); err != nil {
++			t.Fatal(err)
++		}
++		_ = stream.Close()
++		deadline := time.Now().Add(time.Second)
++		for accepted.Load() == 0 && time.Now().Before(deadline) {
++			time.Sleep(time.Millisecond)
++		}
++		if accepted.Load() != 1 {
++			t.Fatalf("accepted %d block notifications", accepted.Load())
++		}
++	})
++
++	t.Run("mobile_fetches_full_block", func(t *testing.T) {
++		desktopSync := NewSyncManager(desktop, SyncConfig{
++			GetBlocksByHeight: func(uint64, int) ([][]byte, error) { return [][]byte{[]byte("full-block")}, nil },
++			GetStatus:         func() ChainStatus { return status },
++		})
++		desktop.host.SetStreamHandler(protocolID(params.ProtocolSync), desktopSync.HandleStream)
++		blocks, err := mobileSync.fetchBlocksByHeight(peer.ID(desktop.PeerID()), 1, 1)
++		if err != nil || len(blocks) != 1 || string(blocks[0]) != "full-block" {
++			t.Fatalf("mobile fetch: blocks=%q err=%v", blocks, err)
++		}
++	})
++
++	t.Run("block_ingress_does_not_relay", func(t *testing.T) {
++		other := mustNewTestNode(t)
++		defer func() { _ = other.Stop() }()
++		mustConnectNodes(t, mobile, other)
++		var relayed atomic.Int32
++		other.host.SetStreamHandler(protocolID(params.ProtocolBlock), func(s network.Stream) {
++			relayed.Add(1)
++			_ = s.Close()
++		})
++		gotBlock := make(chan struct{}, 1)
++		mobile.SetBlockHandler(func(from peer.ID, data []byte) {
++			mobile.RelayBlock(from, data)
++			gotBlock <- struct{}{}
++		})
++		if err := desktop.sendToPeer(mobile.PeerID(), protocolID(params.ProtocolBlock), []byte("test-announcement")); err != nil {
++			t.Fatal(err)
++		}
++		select {
++		case <-gotBlock:
++		case <-time.After(time.Second):
++			t.Fatal("mobile did not receive block announcement")
++		}
++		time.Sleep(100 * time.Millisecond)
++		if relayed.Load() != 0 {
++			t.Fatal("mobile relayed third-party block")
++		}
++	})
++
++	t.Run("local_dandelion_broadcast", func(t *testing.T) {
++		got := make(chan []byte, 1)
++		desktop.host.SetStreamHandler(protocolID(params.ProtocolDandelion), func(s network.Stream) {
++			defer s.Close()
++			data, err := readLengthPrefixedWithLimit(s, MaxDandelionStreamPayloadSize)
++			if err == nil {
++				got <- data
++			}
++		})
++		mobile.dandel.Start(context.Background())
++		defer mobile.dandel.Stop()
++		mobile.BroadcastTx([]byte("disposable-unfunded-transaction"))
++		select {
++		case data := <-got:
++			if string(data) != "disposable-unfunded-transaction" {
++				t.Fatalf("unexpected local broadcast %q", data)
++			}
++		case <-time.After(3 * time.Second):
++			t.Fatal("local Dandelion stem was not sent")
++		}
++	})
++
++	t.Run("dandelion_ingress_protocols_remain_available", func(t *testing.T) {
++		for _, proto := range []string{params.ProtocolDandelion, params.ProtocolTx} {
++			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++			stream, err := desktop.host.NewStream(ctx, mobile.PeerID(), protocolID(proto))
++			cancel()
++			if err != nil {
++				t.Fatalf("mobile lost %s ingress: %v", proto, err)
++			}
++			_ = stream.Close()
++		}
++	})
++}
++
++func TestMobileClientOfflinePEXDoesNotBlockLocalStartup(t *testing.T) {
++	cfg := DefaultNodeConfig()
++	cfg.MobileClient = true
++	cfg.AllowOfflineStart = true
++	cfg.SeedNodes = []string{"/ip4/127.0.0.1/tcp/1/p2p/" + testWhitelistPeerID}
++	node, err := NewNode(cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer func() { _ = node.Stop() }()
++	start := time.Now()
++	if err := node.Start(); err != nil {
++		t.Fatal(err)
++	}
++	if took := time.Since(start); took > time.Second {
++		t.Fatalf("offline mobile startup blocked on seed dial for %s", took)
++	}
++}
+diff --git a/p2p/node.go b/p2p/node.go
+index 86a8487..8680e01 100644
+--- a/p2p/node.go
++++ b/p2p/node.go
+@@ -51,6 +51,10 @@ type NodeConfig struct {
+ 
+ 	// SeedMode allows startup even when other seeds are unreachable
+ 	SeedMode bool
++	// MobileClient disables all inbound listening and remote data/peer serving.
++	MobileClient bool
++	// AllowOfflineStart permits the local wallet to start without reachable seeds.
++	AllowOfflineStart bool
+ }
+ 
+ // DefaultNodeConfig returns sensible defaults
+@@ -202,20 +206,21 @@ func NewNode(cfg NodeConfig) (*Node, error) {
+ 		return node.IsBanned(pid)
+ 	})
+ 
+-	// Create libp2p host with banned-peer admission gating enabled.
+-	h, err := libp2p.New(
++	// A mobile host must not listen, map NAT ports, or enable hole punching.
++	options := []libp2p.Option{
+ 		libp2p.Identity(privKey),
+-		libp2p.ListenAddrs(listenAddrs...),
+ 		libp2p.ConnectionManager(connMgr),
+ 		libp2p.ConnectionGater(banGater),
+ 		libp2p.UserAgent(cfg.UserAgent),
+-		// Enable NAT port mapping
+-		libp2p.NATPortMap(),
+-		// Enable hole punching for NAT traversal
+-		libp2p.EnableHolePunching(),
+-		// Disable relay (we don't want to route others' traffic)
+ 		libp2p.DisableRelay(),
+-	)
++	}
++	if cfg.MobileClient {
++		options = append(options, libp2p.NoListenAddrs)
++	} else {
++		options = append(options, libp2p.ListenAddrs(listenAddrs...), libp2p.NATPortMap(), libp2p.EnableHolePunching())
++	}
++	// Create libp2p host with banned-peer admission gating enabled.
++	h, err := libp2p.New(options...)
+ 	if err != nil {
+ 		cancel()
+ 		return nil, fmt.Errorf("failed to create libp2p host: %w", err)
+@@ -225,7 +230,7 @@ func NewNode(cfg NodeConfig) (*Node, error) {
+ 
+ 	// Set up identity rotation callback
+ 	identity.SetRotationCallback(func(newKey crypto.PrivKey, newID peer.ID) {
+-		
++
+ 		node.mu.Lock()
+ 		node.pendingKey = newKey
+ 		node.pendingID = newID
+@@ -252,10 +257,9 @@ func (n *Node) registerProtocols() {
+ 	// Block announcement protocol
+ 	n.host.SetStreamHandler(protocolID(params.ProtocolBlock), n.handleBlockStream)
+ 
+-	// Transaction protocol (fluff phase ingress)
++	// Keep third-party Dandelion++ stem/fluff ingress. A mobile peer that cannot
++	// forward a stem would make its own outgoing stems easier to attribute.
+ 	n.host.SetStreamHandler(protocolID(params.ProtocolTx), n.handleTxStream)
+-
+-	// Dandelion stem protocol
+ 	n.host.SetStreamHandler(protocolID(params.ProtocolDandelion), n.dandel.HandleStemStream)
+ 
+ 	// Sync protocol
+@@ -344,6 +348,8 @@ func (n *Node) Host() host.Host {
+ 	return n.host
+ }
+ 
++func (n *Node) MobileClient() bool { return n.config.MobileClient }
++
+ // PeerID returns the current peer ID
+ func (n *Node) PeerID() peer.ID {
+ 	return n.identity.CurrentPeerID()
+@@ -417,6 +423,9 @@ func (n *Node) BroadcastBlock(data []byte) {
+ 
+ // RelayBlock relays a block to all peers except the sender
+ func (n *Node) RelayBlock(sender peer.ID, data []byte) {
++	if n.config.MobileClient {
++		return
++	}
+ 	peers := n.host.Network().Peers()
+ 	for _, p := range peers {
+ 		if p != sender {
+diff --git a/p2p/pex.go b/p2p/pex.go
+index 903aa36..c89d318 100644
+--- a/p2p/pex.go
++++ b/p2p/pex.go
+@@ -162,9 +162,9 @@ type BanRecord struct {
+ type PeerExchange struct {
+ 	mu sync.RWMutex
+ 
+-	node       *Node
+-	seedNodes  []peer.AddrInfo
+-	knownPeers map[peer.ID]*PeerRecord
++	node         *Node
++	seedNodes    []peer.AddrInfo
++	knownPeers   map[peer.ID]*PeerRecord
+ 	banWhitelist map[peer.ID]struct{}
+ 
+ 	// Ban list
+@@ -173,8 +173,9 @@ type PeerExchange struct {
+ 	// Connection tracking
+ 	lastExchange map[peer.ID]time.Time
+ 
+-	ctx    context.Context
+-	cancel context.CancelFunc
++	ctx           context.Context
++	cancel        context.CancelFunc
++	seedConnectMu sync.Mutex
+ }
+ 
+ func newPeerIDSet(ids []string) (map[peer.ID]struct{}, error) {
+@@ -230,8 +231,11 @@ func (pex *PeerExchange) isWhitelistedLocked(pid peer.ID) bool {
+ func (pex *PeerExchange) Start(ctx context.Context) error {
+ 	pex.ctx, pex.cancel = context.WithCancel(ctx)
+ 
+-	// Connect to seed nodes
+-	if err := pex.connectToSeeds(); err != nil {
++	// The mobile wallet's local API must become available even when every seed
++	// dial times out. Bootstrap asynchronously; reconnectLoop continues retrying.
++	if pex.node.config.AllowOfflineStart {
++		go func() { _ = pex.connectToSeeds() }()
++	} else if err := pex.connectToSeeds(); err != nil {
+ 		return err
+ 	}
+ 
+@@ -252,6 +256,11 @@ func (pex *PeerExchange) Stop() {
+ 
+ // connectToSeeds attempts to connect to all seed nodes
+ func (pex *PeerExchange) connectToSeeds() error {
++	pex.seedConnectMu.Lock()
++	defer pex.seedConnectMu.Unlock()
++	if pex.ctx != nil && pex.ctx.Err() != nil {
++		return pex.ctx.Err()
++	}
+ 	if len(pex.seedNodes) == 0 {
+ 		return nil // No seeds configured
+ 	}
+@@ -290,13 +299,17 @@ func (pex *PeerExchange) connectToSeeds() error {
+ 
+ 		// Not the last attempt - wait and retry
+ 		if attempt < maxRetries {
+-			time.Sleep(2 * time.Second)
++			select {
++			case <-pex.ctx.Done():
++				return pex.ctx.Err()
++			case <-time.After(2 * time.Second):
++			}
+ 		}
+ 	}
+ 
+ 	// All retries failed
+-	if pex.node.config.SeedMode {
+-		log.Printf("Seed mode: no other seeds reachable yet, will retry in background")
++	if pex.node.config.SeedMode || pex.node.config.AllowOfflineStart {
++		log.Printf("No seed reachable yet; will retry in background")
+ 		return nil
+ 	}
+ 	return fmt.Errorf("failed to connect to any seed nodes after %d attempts", maxRetries)
+@@ -611,7 +624,9 @@ func (pex *PeerExchange) HandleStream(s network.Stream) {
+ 
+ 	switch msgType {
+ 	case PEXMsgGetPeers:
+-		pex.handleGetPeers(s)
++		if !pex.node.config.MobileClient {
++			pex.handleGetPeers(s)
++		}
+ 	case PEXMsgAnnounce:
+ 		// Peer is announcing themselves - we already know them from the connection
+ 	}
+diff --git a/p2p/sync.go b/p2p/sync.go
+index 7ff81cb..94a435b 100644
+--- a/p2p/sync.go
++++ b/p2p/sync.go
+@@ -238,15 +238,23 @@ func (sm *SyncManager) HandleStream(s network.Stream) {
+ 	case SyncMsgStatus:
+ 		sm.handleStatus(s, data)
+ 	case SyncMsgGetHeaders:
+-		sm.handleGetHeaders(s, data)
++		if !sm.node.config.MobileClient {
++			sm.handleGetHeaders(s, data)
++		}
+ 	case SyncMsgGetBlocks:
+-		sm.handleGetBlocks(s, data)
++		if !sm.node.config.MobileClient {
++			sm.handleGetBlocks(s, data)
++		}
+ 	case SyncMsgGetBlocksByHeight:
+-		sm.handleGetBlocksByHeight(s, data)
++		if !sm.node.config.MobileClient {
++			sm.handleGetBlocksByHeight(s, data)
++		}
+ 	case SyncMsgNewBlock:
+ 		sm.handleNewBlock(s.Conn().RemotePeer(), data)
+ 	case SyncMsgGetMempool:
+-		sm.handleGetMempool(s)
++		if !sm.node.config.MobileClient {
++			sm.handleGetMempool(s)
++		}
+ 	}
+ }
+ 
+@@ -382,7 +390,9 @@ func (sm *SyncManager) handleNewBlock(from peer.ID, data []byte) {
+ 			sm.onBlockAccepted(data)
+ 		}
+ 		// Relay to other peers (exclude sender)
+-		sm.relayBlock(from, data)
++		if !sm.node.config.MobileClient {
++			sm.relayBlock(from, data)
++		}
+ 	}
+ }
+ 

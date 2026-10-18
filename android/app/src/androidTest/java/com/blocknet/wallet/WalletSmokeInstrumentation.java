@@ -148,9 +148,9 @@ public final class WalletSmokeInstrumentation extends Instrumentation {
             check(MainActivity.explorerIntent(null)==null,"Missing transaction hash produces no browser intent");
             long generation=runtime.generation();
             File lib=new File(getTargetContext().getApplicationInfo().nativeLibraryDir);
-            check(sha256(new File(lib,"libmantle.so")).equals("5587193a22c6221e4b57e45c7944357e2e6992d9b3b8e6ced80c5555c1191a04"), "Installed Mantle bytes match supplied executable");
+            check(!new File(lib,"libmantle.so").exists(), "Installed APK does not contain Mantle");
             String expectedCore="0056d4d86446071525203f738dfdbaaa6e71be48e04f6f222e1067d3c9861143";
-            if(BuildConfig.CORE_ACTIVITY_API)try(java.io.InputStream provenance=getTargetContext().getAssets().open("core-activity-build-provenance.json")){
+            if(BuildConfig.CORE_ACTIVITY_API)try(java.io.InputStream provenance=getTargetContext().getAssets().open(BuildConfig.CORE_MOBILE_CLIENT?"core-mobile-build-provenance.json":"core-activity-build-provenance.json")){
                 expectedCore=new org.json.JSONObject(WalletApi.readBounded(provenance,65536)).getString("binary_sha256");
             }
             check(sha256(new File(lib,"libblocknet_core.so")).equals(expectedCore),BuildConfig.CORE_ACTIVITY_API?"Installed activity Core bytes match explicit build provenance":"Installed Core bytes match supplied executable");

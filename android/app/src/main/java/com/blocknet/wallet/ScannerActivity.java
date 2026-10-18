@@ -44,6 +44,8 @@ public final class ScannerActivity extends Activity implements TextureView.Surfa
     private volatile boolean resumed, completed;
     private long lastDecode;
 
+    @Override protected void attachBaseContext(android.content.Context base){super.attachBaseContext(AppLanguage.wrap(base));}
+
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
@@ -62,12 +64,12 @@ public final class ScannerActivity extends Activity implements TextureView.Surfa
         overlay.setGravity(Gravity.CENTER_HORIZONTAL);
         overlay.setBackgroundColor(0xCC080B10);
         status = new TextView(this);
-        status.setText("Scan a Blocknet payment QR code\nAlign the code in the camera view");
+        status.setText(LocalizedText.get(this,"Scan a Blocknet payment QR code\nAlign the code in the camera view"));
         status.setTextColor(Color.WHITE);
         status.setTextSize(18);
         status.setGravity(Gravity.CENTER);
         overlay.addView(status);
-        retry = new Button(this); retry.setText("Enable camera");
+        retry = new Button(this); retry.setText(LocalizedText.get(this,"Enable camera"));
         retry.setVisibility(View.GONE);
         retry.setOnClickListener(v -> {
             if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera();
@@ -75,7 +77,7 @@ public final class ScannerActivity extends Activity implements TextureView.Surfa
             else startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + getPackageName())));
         });
         overlay.addView(retry);
-        Button cancel = new Button(this); cancel.setText("Cancel");
+        Button cancel = new Button(this); cancel.setText(LocalizedText.get(this,"Cancel"));
         cancel.setOnClickListener(v -> finish()); overlay.addView(cancel);
         FrameLayout.LayoutParams overlayParams = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
         root.addView(overlay, overlayParams);
@@ -160,7 +162,7 @@ public final class ScannerActivity extends Activity implements TextureView.Surfa
         if (result == null) return;
         try { PaymentRequest.parse(result); }
         catch (IllegalArgumentException e) {
-            runOnUiThread(() -> status.setText("This QR code is not a supported Blocknet payment request.")); return;
+            runOnUiThread(() -> status.setText(LocalizedText.get(this,"This QR code is not a supported Blocknet payment request."))); return;
         }
         String payment = result;
         runOnUiThread(() -> {
@@ -175,7 +177,7 @@ public final class ScannerActivity extends Activity implements TextureView.Surfa
         try { camera.release(); } catch (Exception ignored) { } finally { camera = null; }
     }
     private void showError(String message) {
-        runOnUiThread(() -> { if (!isFinishing()) { status.setText(message); retry.setVisibility(View.VISIBLE); } });
+        runOnUiThread(() -> { if (!isFinishing()) { status.setText(LocalizedText.get(this,message)); retry.setVisibility(View.VISIBLE); } });
     }
     @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) { startCamera(); }
     @Override public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) { }

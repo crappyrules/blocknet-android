@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"blocknet/protocol/params"
 	"blocknet/wallet"
 )
 
@@ -121,7 +122,9 @@ func viewWallet(path string, password []byte) (savedView, error) {
 	return view, nil
 }
 
-func run(path string, input io.Reader, output io.Writer) error {
+func run(network, path string, input io.Reader, output io.Writer) error {
+	if network != "mainnet" && network != "testnet" { return errors.New("invalid wallet network") }
+	if network == "testnet" { params.InitTestnet() }
 	password, err := readPassword(input)
 	if err != nil { return err }
 	defer wipe(password)
@@ -131,7 +134,7 @@ func run(path string, input io.Reader, output io.Writer) error {
 }
 
 func main() {
-	if len(os.Args) != 2 || run(os.Args[1], os.Stdin, os.Stdout) != nil {
+	if len(os.Args) != 3 || run(os.Args[1], os.Args[2], os.Stdin, os.Stdout) != nil {
 		os.Exit(1)
 	}
 }

@@ -1,13 +1,13 @@
 # On-chain update signal (channel configured, no announcement broadcast)
 
-The activity-Core variant adds an authenticated, read-only `POST /api/updates/scan`
+The reviewed mobile Core includes the activity API's authenticated, read-only `POST /api/updates/scan`
 endpoint. It scans at most eight locally stored canonical blocks and 512 outputs
 per request, with batches of 64 and at most 16 candidate memos. A partial cursor
 includes block height, transaction index and output index, so a crowded block
 or spam cannot make the scan skip outputs. Core returns block hashes and only
 122-byte memos with the `BNAU` prefix that match the configured public-view
 announcement channel. It does not load, unlock, or inspect the user's wallet.
-The supplied Core binary has no such endpoint; it is never silently patched.
+The endpoint comes from the reviewed 0003 patch to pinned upstream Core.
 
 ## Signed record
 
@@ -20,7 +20,7 @@ All integers are big-endian. The exact 122-byte layout is:
 | 5 | 1 | Kind `1` (release only; all other kinds rejected) |
 | 6–9 | 4 | Chain epoch (`0x20260215` for the reviewed mainnet) |
 | 10 | 1 | App `1` (Blocknet Android) |
-| 11 | 1 | APK variant `2` (activity Core) |
+| 11 | 1 | APK variant `2` (activity API protocol; the release uses mobile Core) |
 | 12 | 1 | Channel `1` (preview) |
 | 13 | 1 | Signer `1` (pinned primary public key) |
 | 14–21 | 8 | Monotonic sequence |
@@ -42,7 +42,9 @@ The app binds the request to Android's permitted network, rejects redirects,
 and reads at most 32 KiB. The raw-byte SHA-256 must match the signed memo. Its
 JSON must contain only the documented app, epoch, sequence, version, variant,
 channel, official release-page URL, exact activity-release APK URL, APK SHA-256,
-expected signing-certificate SHA-256, and notes fields. The app displays the
+expected signing-certificate SHA-256, and notes fields. The `activity-release`
+asset name remains the variant-2 URL contract even when the APK contains the
+mobile Core. The app displays the
 release-page link named in the authenticated manifest; it does not download,
 authenticate, or install the APK at that page. A signed announcement is **not**
 an authenticated installer. Phone-side APK byte, package and signing checks

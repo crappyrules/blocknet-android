@@ -32,7 +32,7 @@ final class OfflineWalletReader {
         Process process=null;
         FutureTask<byte[]> response=null;
         try {
-            process=new ProcessBuilder(helper.getAbsolutePath(),file.getAbsolutePath())
+            process=new ProcessBuilder(helper.getAbsolutePath(),runtime.network(),file.getAbsolutePath())
                 .directory(runtime.networkDir()).start();
             final InputStream stdout=process.getInputStream();
             response=new FutureTask<>(()->boundedRead(stdout));

@@ -1,0 +1,633 @@
+From d0548fe1f1404198daca29b21e693cd46c1eeec5 Mon Sep 17 00:00:00 2001
+From: Codex Review <codex-review@example.invalid>
+Date: Sat, 17 Oct 2026 18:33:59 -0400
+Subject: [PATCH] Serialize wallet scans and repair canonical scan tips
+
+---
+ api_handlers.go            |  75 +++++++++-
+ cli.go                     | 106 +++++++++++---
+ wallet_scan_serial_test.go | 286 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 442 insertions(+), 25 deletions(-)
+ create mode 100644 wallet_scan_serial_test.go
+
+diff --git a/api_handlers.go b/api_handlers.go
+index a472492..8b2fa57 100644
+--- a/api_handlers.go
++++ b/api_handlers.go
+@@ -1624,12 +1624,23 @@ func (c *capturingResponseWriter) Write(p []byte) (int, error) {
+ // handleUnloadWallet locks and unloads the currently loaded wallet.
+ // POST /api/wallet/unload
+ func (s *APIServer) handleUnloadWallet(w http.ResponseWriter, r *http.Request) {
++	if s.cli != nil {
++		s.cli.scanMu.Lock()
++		defer s.cli.scanMu.Unlock()
++	}
+ 	s.mu.Lock()
+ 	if s.wallet == nil {
+ 		s.mu.Unlock()
+ 		writeError(w, http.StatusServiceUnavailable, "no wallet loaded")
+ 		return
+ 	}
++	// Persist the last scan step before dropping the wallet reference. A
++	// failed save leaves the loaded wallet available for recovery/retry.
++	if err := s.wallet.Save(); err != nil {
++		s.mu.Unlock()
++		writeInternal(w, r, http.StatusInternalServerError, "wallet could not be saved", err)
++		return
++	}
+ 	s.wallet = nil
+ 	s.scanner = nil
+ 	s.locked = true
+@@ -2244,8 +2255,9 @@ func (s *APIServer) handleWalletSync(w http.ResponseWriter, r *http.Request) {
+ 
+ 	chainHeight := s.daemon.Chain().Height()
+ 	walletHeight := s.wallet.SyncedHeight()
++	canonicalTip := s.daemon.Chain().GetBlockByHeight(chainHeight)
+ 
+-	if walletHeight >= chainHeight {
++	if walletHeight == chainHeight && canonicalTip != nil && s.wallet.SyncedHash() == canonicalTip.Hash() {
+ 		writeJSON(w, http.StatusOK, map[string]any{
+ 			"status":        "already synced",
+ 			"synced_height": walletHeight,
+@@ -2848,6 +2860,8 @@ func (s *APIServer) catchUpScan() {
+ 	if s.cli == nil || s.cli.ctx == nil || s.daemon == nil {
+ 		return
+ 	}
++	s.cli.catchUpMu.Lock()
++	defer s.cli.catchUpMu.Unlock()
+ 
+ 	s.mu.RLock()
+ 	w := s.wallet
+@@ -2858,22 +2872,76 @@ func (s *APIServer) catchUpScan() {
+ 	}
+ 
+ 	ctx := s.cli.ctx
+-
++	s.cli.scanMu.Lock()
++	if ctx.Err() != nil {
++		s.cli.scanMu.Unlock()
++		return
++	}
++	s.mu.RLock()
++	currentWallet := s.wallet == w && s.scanner == sc
++	s.mu.RUnlock()
++	if !currentWallet {
++		s.cli.scanMu.Unlock()
++		return
++	}
++	chain := s.daemon.Chain()
+ 	walletHeight := w.SyncedHeight()
+-	chainHeight := s.daemon.Chain().Height()
++	chainHeight := chain.Height()
++	anchoredGenesis := false
++	if walletHeight == 0 && w.SyncedHash() == [32]byte{} {
++		// Height zero with no hash has never been anchored. Scan genesis for
++		// imported/older wallets before treating equal heights as current.
++		if genesis := chain.GetBlockByHeight(0); genesis != nil {
++			applyBlockToWallet(chain, w, sc, genesis)
++			anchoredGenesis = w.SyncedHash() == genesis.Hash()
++		}
++	}
+ 	if walletHeight >= chainHeight {
++		canonical := chain.GetBlockByHeight(chainHeight)
++		if canonical != nil && walletHeight == chainHeight && w.SyncedHash() == canonical.Hash() {
++			if anchoredGenesis {
++				if err := w.Save(); err != nil {
++					log.Printf("Warning: genesis wallet scan save: %v", err)
++				}
++			}
++			s.cli.scanMu.Unlock()
++			return
++		}
++		if chainHeight == 0 {
++			w.RewindToHeight(0)
++			if canonical != nil {
++				applyBlockToWallet(chain, w, sc, canonical)
++			}
++		} else {
++			reconcileWalletReorg(chain, w, sc)
++		}
++		if err := w.Save(); err != nil {
++			log.Printf("Warning: wallet tip repair save: %v", err)
++		}
++		s.cli.scanMu.Unlock()
+ 		return
+ 	}
++	s.cli.scanMu.Unlock()
+ 
+ 	for h := walletHeight + 1; h <= chainHeight; h++ {
++		s.cli.scanMu.Lock()
+ 		select {
+ 		case <-ctx.Done():
++			s.cli.scanMu.Unlock()
+ 			return
+ 		default:
+ 		}
++		s.mu.RLock()
++		currentWallet := s.wallet == w && s.scanner == sc
++		s.mu.RUnlock()
++		if !currentWallet {
++			s.cli.scanMu.Unlock()
++			return
++		}
+ 
+ 		block := s.daemon.Chain().GetBlockByHeight(h)
+ 		if block == nil {
++			s.cli.scanMu.Unlock()
+ 			break
+ 		}
+ 		applyBlockToWallet(s.daemon.Chain(), w, sc, block)
+@@ -2886,6 +2954,7 @@ func (s *APIServer) catchUpScan() {
+ 				log.Printf("Warning: catchUpScan save at height %d: %v", h, err)
+ 			}
+ 		}
++		s.cli.scanMu.Unlock()
+ 
+ 		// Re-read chain height in case new blocks arrived during scan
+ 		if h == chainHeight {
+diff --git a/cli.go b/cli.go
+index 20fe1d9..39b5d4b 100644
+--- a/cli.go
++++ b/cli.go
+@@ -28,6 +28,10 @@ type CLI struct {
+ 	dataDir         string
+ 	walletFile      string
+ 	mu              sync.RWMutex // protects wallet/scanner/passwordHash during hot-load
++	// scanMu owns each compound scan/reorg/tip/save step across catch-up and
++	// live block delivery. catchUpMu coalesces concurrent catch-up requests.
++	scanMu          sync.Mutex
++	catchUpMu       sync.Mutex
+ 	walletFileMu    sync.RWMutex
+ 	settingsMu      sync.Mutex
+ 	settings        Settings
+@@ -148,11 +152,9 @@ func (c *CLI) Run() error {
+ 
+ 	go func() {
+ 		<-sigChan
+-		if err := c.shutdown(); err != nil {
+-			fmt.Printf("  Warning: %v\n", err)
+-		}
+-		os.Exit(0)
++		c.cancel()
+ 	}()
++	defer signal.Stop(sigChan)
+ 
+ 	// Start the API server first, before the (potentially slow) P2P dial and
+ 	// chain catch-up below. The chain DB is already open (NewDaemon), so
+@@ -278,15 +280,23 @@ func (c *CLI) printLogo() {
+ }
+ 
+ func (c *CLI) shutdown() error {
++	c.cancel()
+ 	// Stop API server first (removes cookie file)
+ 	if c.api != nil {
+ 		c.api.Stop()
+ 	}
++	// Wait for the active scan step before the final wallet snapshot. Future
++	// scan steps observe the canceled context and cannot mutate the wallet.
++	c.scanMu.Lock()
++	defer c.scanMu.Unlock()
+ 
+ 	fmt.Printf("\n%s\n", c.sectionHead("Shutdown"))
+-	if c.wallet != nil {
++	c.mu.RLock()
++	w := c.wallet
++	c.mu.RUnlock()
++	if w != nil {
+ 		fmt.Println("  Saving wallet...")
+-		if err := c.wallet.Save(); err != nil {
++		if err := w.Save(); err != nil {
+ 			fmt.Printf("  Warning: failed to save wallet: %v\n", err)
+ 		}
+ 	}
+@@ -330,58 +340,83 @@ func formatAmount(atomicUnits uint64) string {
+ // autoScanBlocks subscribes to new blocks and scans them for wallet outputs
+ func (c *CLI) autoScanBlocks() {
+ 	blockCh := c.daemon.SubscribeBlocks()
++	defer c.daemon.UnsubscribeBlocks(blockCh)
+ 	const saveBatchSize = 50
+ 	unsaved := 0
++	var pendingWallet *wallet.Wallet
+ 	saveTimer := time.NewTimer(10 * time.Second)
++	saveTimer.Stop()
++	var saveTimerCh <-chan time.Time
+ 	defer saveTimer.Stop()
+ 
+ 	doSave := func() {
+-		if unsaved == 0 {
+-			return
+-		}
+-		c.mu.RLock()
+-		w := c.wallet
+-		c.mu.RUnlock()
+-		if w == nil {
+-			return
+-		}
+-		if err := w.Save(); err != nil {
+-			fmt.Printf("  Warning: failed to persist wallet scan updates: %v\n", err)
++		if unsaved > 0 && pendingWallet != nil {
++			c.mu.RLock()
++			stillLoaded := c.wallet == pendingWallet
++			c.mu.RUnlock()
++			// Unload saves before dropping the wallet. Do not let a delayed batch
++			// from that old instance overwrite a newly loaded copy of the file.
++			if stillLoaded {
++				if err := pendingWallet.Save(); err != nil {
++					fmt.Printf("  Warning: failed to persist wallet scan updates: %v\n", err)
++				}
++			}
+ 		}
+ 		unsaved = 0
+-		saveTimer.Reset(10 * time.Second)
++		pendingWallet = nil
++		saveTimer.Stop()
++		saveTimerCh = nil
+ 	}
+ 
+ 	for {
+ 		select {
+ 		case <-c.ctx.Done():
++			c.scanMu.Lock()
+ 			doSave()
++			c.scanMu.Unlock()
+ 			return
+-		case <-saveTimer.C:
++		case <-saveTimerCh:
++			c.scanMu.Lock()
+ 			doSave()
++			c.scanMu.Unlock()
+ 		case block := <-blockCh:
+ 			if block == nil {
+ 				continue
+ 			}
+ 
++			c.scanMu.Lock()
++			if c.ctx.Err() != nil {
++				c.scanMu.Unlock()
++				continue
++			}
+ 			c.mu.RLock()
+ 			scanner := c.scanner
+ 			w := c.wallet
+ 			c.mu.RUnlock()
+ 
+-			if scanner == nil {
++			if scanner == nil || w == nil {
++				c.scanMu.Unlock()
+ 				continue
+ 			}
++			if pendingWallet != nil && pendingWallet != w {
++				doSave()
++			}
+ 
+ 			applyBlockToWallet(c.daemon.Chain(), w, scanner, block)
+ 			w.ReconcileUnconfirmedSpends(func(txID [32]byte) bool {
+ 				return c.daemon.Mempool().HasTransaction(txID)
+ 			})
+ 
++			if unsaved == 0 {
++				saveTimer.Reset(10 * time.Second)
++				saveTimerCh = saveTimer.C
++			}
+ 			unsaved++
++			pendingWallet = w
+ 			if unsaved >= saveBatchSize {
+ 				doSave()
+ 			}
++			c.scanMu.Unlock()
+ 		}
+ 	}
+ }
+@@ -398,8 +433,35 @@ func applyBlockToWallet(chain *Chain, w *wallet.Wallet, sc *wallet.Scanner, bloc
+ 		return
+ 	}
+ 	syncedHash := w.SyncedHash()
+-	extends := (syncedHash == [32]byte{} && block.Header.Height == w.SyncedHeight()+1) ||
+-		(syncedHash != [32]byte{} && block.Header.PrevHash == syncedHash)
++	syncedHeight := w.SyncedHeight()
++	if syncedHash == [32]byte{} {
++		// No hash means this wallet has never been anchored to a canonical
++		// block. Genesis must be scanned for height-zero imports; a legacy
++		// nonzero cursor needs conservative reorg reconciliation before the
++		// next live event can advance it.
++		if syncedHeight > 0 {
++			reconcileWalletReorg(chain, w, sc)
++			return
++		}
++		genesis := chain.GetBlockByHeight(0)
++		if genesis == nil {
++			return
++		}
++		sc.ScanBlock(blockToScanData(genesis))
++		w.SetSyncedTip(0, genesis.Hash())
++		syncedHash = genesis.Hash()
++	}
++	if block.Header.Height <= syncedHeight {
++		// Catch-up may already have applied this queued live event. Only a
++		// changed canonical tip needs reorg reconciliation.
++		canonicalTip := chain.GetBlockByHeight(syncedHeight)
++		if canonicalTip != nil && canonicalTip.Hash() == syncedHash {
++			return
++		}
++		reconcileWalletReorg(chain, w, sc)
++		return
++	}
++	extends := block.Header.Height == syncedHeight+1 && block.Header.PrevHash == syncedHash
+ 	if extends {
+ 		sc.ScanBlock(blockToScanData(block))
+ 		w.SetSyncedTip(block.Header.Height, block.Hash())
+diff --git a/wallet_scan_serial_test.go b/wallet_scan_serial_test.go
+new file mode 100644
+index 0000000..2ae2944
+--- /dev/null
++++ b/wallet_scan_serial_test.go
+@@ -0,0 +1,286 @@
++package main
++
++import (
++	"bytes"
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"blocknet/wallet"
++)
++
++func TestApplyBlockToWalletIgnoresStaleCanonicalEvent(t *testing.T) {
++	chain, _, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	genesis := chain.GetBlockByHeight(0)
++	w, err := wallet.NewWallet(filepath.Join(t.TempDir(), "disposable.wallet"), []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	w.SetSyncedTip(0, genesis.Hash())
++	applyBlockToWallet(chain, w, wallet.NewScanner(w, defaultScannerConfig()), genesis)
++	if w.SyncedHeight() != 0 || w.SyncedHash() != genesis.Hash() {
++		t.Fatal("stale canonical event rewound the wallet scan tip")
++	}
++}
++
++func TestAutoScanDropsPendingSaveAfterWalletUnload(t *testing.T) {
++	chain, _, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	genesis := chain.GetBlockByHeight(0)
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	path := filepath.Join(t.TempDir(), "disposable.wallet")
++	w, err := wallet.NewWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	c := &CLI{ctx: ctx, cancel: cancel, daemon: d, wallet: w,
++		scanner: wallet.NewScanner(w, defaultScannerConfig())}
++	done := make(chan struct{})
++	go func() { c.autoScanBlocks(); close(done) }()
++	deadline := time.Now().Add(5 * time.Second)
++	for {
++		d.blockSubsMu.Lock()
++		ready := len(d.blockSubs) > 0
++		d.blockSubsMu.Unlock()
++		if ready {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("live subscriber did not start")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	d.notifyBlock(genesis)
++	for w.SyncedHash() != genesis.Hash() {
++		if time.Now().After(deadline) {
++			t.Fatal("live scan did not anchor genesis")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	// Unload commits the old instance, then another instance updates the same
++	// encrypted file. The delayed live-scan batch must not replace its bytes.
++	c.scanMu.Lock()
++	if err := w.Save(); err != nil {
++		c.scanMu.Unlock()
++		t.Fatal(err)
++	}
++	c.mu.Lock()
++	c.wallet, c.scanner = nil, nil
++	c.mu.Unlock()
++	c.scanMu.Unlock()
++	other, err := wallet.LoadWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	want := [32]byte{42}
++	other.SetSyncedTip(1, want)
++	if err := other.Save(); err != nil {
++		t.Fatal(err)
++	}
++	cancel()
++	select {
++	case <-done:
++	case <-time.After(5 * time.Second):
++		t.Fatal("live scan did not stop")
++	}
++	reloaded, err := wallet.LoadWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if reloaded.SyncedHeight() != 1 || reloaded.SyncedHash() != want {
++		t.Fatal("unloaded live-scan instance overwrote the newer wallet file")
++	}
++}
++
++func TestCatchUpAnchorsUnhashedGenesisForReadiness(t *testing.T) {
++	chain, _, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	path := filepath.Join(t.TempDir(), "disposable.wallet")
++	w, err := wallet.NewWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if w.SyncedHash() != ([32]byte{}) {
++		t.Fatal("fixture was already anchored")
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	c := &CLI{ctx: ctx, cancel: cancel, daemon: d, wallet: w}
++	s := NewAPIServer(d, w, wallet.NewScanner(w, defaultScannerConfig()), t.TempDir(), []byte("pw"))
++	s.cli = c
++	s.catchUpScan()
++	want := chain.GetBlockByHeight(0).Hash()
++	if w.SyncedHeight() != 0 || w.SyncedHash() != want {
++		t.Fatal("genesis remained unanchored")
++	}
++	loaded, err := wallet.LoadWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if loaded.SyncedHash() != want {
++		t.Fatal("genesis anchor was not durable")
++	}
++}
++
++func TestExplicitSyncRepairsSameHeightForkForReadiness(t *testing.T) {
++	chain, storage, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	genesis := chain.GetBlockByHeight(0)
++	b1 := &Block{Header: BlockHeader{Version: 1, Height: 1, PrevHash: genesis.Hash(),
++		Timestamp: genesis.Header.Timestamp + BlockIntervalSec, Difficulty: MinDifficulty}}
++	if err := storage.CommitBlock(&BlockCommit{Block: b1, Height: 1, Hash: b1.Hash(), Work: 2, IsMainTip: true}); err != nil {
++		t.Fatal(err)
++	}
++	chain.mu.Lock()
++	chain.height, chain.bestHash = 1, b1.Hash()
++	chain.publishTipLocked()
++	chain.mu.Unlock()
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	path := filepath.Join(t.TempDir(), "disposable.wallet")
++	w, err := wallet.NewWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	w.AddOutput(&wallet.OwnedOutput{TxID: [32]byte{9}, OutputIndex: 0, Amount: 5, BlockHeight: 1})
++	w.SetSyncedTip(1, [32]byte{0xff})
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	c := &CLI{ctx: ctx, cancel: cancel, daemon: d, wallet: w}
++	s := NewAPIServer(d, w, wallet.NewScanner(w, defaultScannerConfig()), t.TempDir(), []byte("pw"))
++	s.cli = c
++	response := httptest.NewRecorder()
++	s.handleWalletSync(response, httptest.NewRequest(http.MethodPost, "/api/wallet/sync", nil))
++	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"scanning"`)) {
++		t.Fatalf("same-height mismatch was dismissed: %d %s", response.Code, response.Body.String())
++	}
++	deadline := time.Now().Add(10 * time.Second)
++	for w.SyncedHash() != b1.Hash() {
++		if time.Now().After(deadline) {
++			t.Fatal("same-height fork was not repaired")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	if outputs := w.AllOutputs(); len(outputs) != 0 {
++		t.Fatalf("stale fork outputs survived: %d", len(outputs))
++	}
++	// catch-up saves after repair; wait for that completion before reload.
++	c.catchUpMu.Lock()
++	c.catchUpMu.Unlock()
++	loaded, err := wallet.LoadWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if loaded.SyncedHash() != b1.Hash() {
++		t.Fatal("repaired tip was not durable")
++	}
++}
++
++func TestCatchUpAndLiveScanSerializeAndReload(t *testing.T) {
++	chain, storage, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	genesis := chain.GetBlockByHeight(0)
++	makeBlock := func(height uint64, prev [32]byte) *Block {
++		return &Block{Header: BlockHeader{Version: 1, Height: height, PrevHash: prev,
++			Timestamp: genesis.Header.Timestamp + int64(height)*BlockIntervalSec, Difficulty: MinDifficulty}}
++	}
++	b1 := makeBlock(1, genesis.Hash())
++	b2 := makeBlock(2, b1.Hash())
++	for _, block := range []*Block{b1, b2} {
++		if err := storage.CommitBlock(&BlockCommit{Block: block, Height: block.Header.Height,
++			Hash: block.Hash(), Work: block.Header.Height + 1, IsMainTip: true}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	chain.mu.Lock()
++	chain.height, chain.bestHash = 2, b2.Hash()
++	chain.publishTipLocked()
++	chain.mu.Unlock()
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	path := filepath.Join(t.TempDir(), "disposable.wallet")
++	w, err := wallet.NewWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	w.SetSyncedTip(0, genesis.Hash())
++	scanner := wallet.NewScanner(w, defaultScannerConfig())
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	c := &CLI{ctx: ctx, cancel: cancel, daemon: d, wallet: w, scanner: scanner}
++	s := NewAPIServer(d, w, scanner, t.TempDir(), []byte("pw"))
++	s.cli = c
++
++	// Hold the scan coordinator while catch-up and a live event arrive. Neither
++	// path may change the compound wallet scan state until the owner releases it.
++	c.scanMu.Lock()
++	catchDone, liveDone := make(chan struct{}), make(chan struct{})
++	go func() { s.catchUpScan(); close(catchDone) }()
++	go func() { c.autoScanBlocks(); close(liveDone) }()
++	deadline := time.Now().Add(5 * time.Second)
++	for {
++		d.blockSubsMu.Lock()
++		ready := len(d.blockSubs) > 0
++		d.blockSubsMu.Unlock()
++		if ready {
++			break
++		}
++		if time.Now().After(deadline) {
++			c.scanMu.Unlock()
++			t.Fatal("live subscriber did not start")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	d.notifyBlock(b2)
++	if w.SyncedHeight() != 0 {
++		c.scanMu.Unlock()
++		t.Fatal("scan advanced while coordinator was held")
++	}
++	c.scanMu.Unlock()
++
++	select {
++	case <-catchDone:
++	case <-time.After(10 * time.Second):
++		t.Fatal("catch-up did not complete")
++	}
++	deadline = time.Now().Add(10 * time.Second)
++	for w.SyncedHeight() != 2 {
++		if time.Now().After(deadline) {
++			t.Fatalf("wallet stopped at height %d", w.SyncedHeight())
++		}
++		time.Sleep(time.Millisecond)
++	}
++	cancel()
++	select {
++	case <-liveDone:
++	case <-time.After(10 * time.Second):
++		t.Fatal("live scan did not stop")
++	}
++	if w.SyncedHash() != b2.Hash() {
++		t.Fatal("wallet tip is not canonical block 2")
++	}
++	if err := w.Save(); err != nil {
++		t.Fatal(err)
++	}
++	loaded, err := wallet.LoadWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if loaded.SyncedHeight() != 2 || loaded.SyncedHash() != b2.Hash() {
++		t.Fatal("serialized scan tip was not durable across restart")
++	}
++}
+-- 
+2.55.0
+

@@ -1,5 +1,6 @@
 package com.blocknet.wallet;
 import org.junit.Test;
+import java.util.Locale;
 import static org.junit.Assert.*;
 public class AmountsTest {
     @Test public void exactAtomicConversion() {
@@ -18,5 +19,15 @@ public class AmountsTest {
     @Test public void allPositiveLongsRoundTrip() {
         for (long value : new long[]{1, 9, 99999999L, 100000000L, 12300000001L, Long.MAX_VALUE})
             assertEquals(value, Amounts.parse(Amounts.format(value)));
+    }
+    @Test public void protocolAmountsDoNotChangeWithChineseDisplayLocale() {
+        Locale previous=Locale.getDefault();
+        try {
+            Locale.setDefault(Locale.SIMPLIFIED_CHINESE);
+            assertEquals(123456789L,Amounts.parse("1.23456789"));
+            assertEquals("1.23456789",Amounts.format(123456789L));
+            try { Amounts.parse("1,23456789"); fail("accepted a localized decimal separator"); }
+            catch (IllegalArgumentException expected) { }
+        } finally { Locale.setDefault(previous); }
     }
 }

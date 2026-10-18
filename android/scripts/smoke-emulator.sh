@@ -11,7 +11,7 @@ if [[ -z "$emulator_serial" ]]; then
 fi
 [[ "$emulator_serial" = emulator-* ]] || { printf 'This script accepts emulator serials only.\n' >&2; exit 1; }
 [[ "$("$adb_bin" -s "$emulator_serial" get-state)" = device ]]
-./gradlew -PofflineWalletViewDir="${OFFLINE_WALLET_VIEW_DIR:?Build the pinned offline wallet reader and set OFFLINE_WALLET_VIEW_DIR}" assembleDebug assembleDebugAndroidTest
+./gradlew -PcoreMobileDir="${CORE_MOBILE_DIR:?Build the reviewed mobile Core and set CORE_MOBILE_DIR}" -PofflineWalletViewDir="${OFFLINE_WALLET_VIEW_DIR:?Build the pinned offline wallet reader and set OFFLINE_WALLET_VIEW_DIR}" assembleDebug assembleDebugAndroidTest
 # This override validates the Java UI on x86; it does not emulate the ARM64 executables.
 "$adb_bin" -s "$emulator_serial" install --abi arm64-v8a -r app/build/outputs/apk/debug/app-debug.apk
 "$adb_bin" -s "$emulator_serial" install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk

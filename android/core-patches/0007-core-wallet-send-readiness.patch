@@ -1,0 +1,351 @@
+diff --git a/api_handlers.go b/api_handlers.go
+index a472492..b1d0b7e 100644
+--- a/api_handlers.go
++++ b/api_handlers.go
+@@ -484,10 +484,10 @@ func (s *APIServer) handleBalance(w http.ResponseWriter, r *http.Request) {
+ 		return
+ 	}
+ 
+-	chainHeight := s.daemon.Chain().Height()
++	chainHeight, _, scanReady := walletScanTip(s.daemon.Chain(), s.wallet)
+ 	syncedHeight := s.wallet.SyncedHeight()
+ 
+-	if chainHeight-syncedHeight > uint64(MaxReorgDepth) {
++	if !scanReady {
+ 		writeJSON(w, http.StatusOK, map[string]any{
+ 			"scanning":      true,
+ 			"synced_height": syncedHeight,
+@@ -1256,7 +1256,11 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
+ 		return
+ 	}
+ 
+-	height := s.daemon.Chain().Height()
++	height, sendHash, ready := s.walletSendTip()
++	if !ready {
++		writeError(w, http.StatusServiceUnavailable, "wallet or node is syncing; wait for the wallet scan")
++		return
++	}
+ 	spendable := s.wallet.SpendableBalance(height)
+ 	if spendable < totalSend {
+ 		pending := s.wallet.PendingBalance(height)
+@@ -1302,6 +1306,10 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
+ 			requiredFee := max(sendMinFee, uint64(estimatedSize)*sendFeePerByte)
+ 			if requiredFee <= fee {
+ 				change := inputTotal - totalSend - fee
++				if currentHeight, currentHash, ready := s.walletSendTip(); !ready || currentHeight != height || currentHash != sendHash {
++					writeError(w, http.StatusServiceUnavailable, "wallet or node changed while estimating the transaction; review it again")
++					return
++				}
+ 				writeJSON(w, http.StatusOK, map[string]any{
+ 					"dry_run":     true,
+ 					"fee":         fee,
+@@ -1325,6 +1333,11 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
+ 		return
+ 	}
+ 
++	if currentHeight, currentHash, ready := s.walletSendTip(); !ready || currentHeight != height || currentHash != sendHash {
++		s.wallet.ReleaseInputLease(result.InputLease)
++		writeError(w, http.StatusServiceUnavailable, "wallet or node changed while preparing the transaction; review it again")
++		return
++	}
+ 	if err := s.daemon.SubmitTransaction(result.TxData); err != nil {
+ 		s.wallet.ReleaseInputLease(result.InputLease)
+ 		writeSendError(w, r, err)
+@@ -1485,6 +1498,11 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
+ 		writeError(w, http.StatusBadRequest, err.Error())
+ 		return
+ 	}
++	readyHeight, sendHash, ready := s.walletSendTip()
++	if !ready {
++		writeError(w, http.StatusServiceUnavailable, "wallet or node is syncing; wait for the wallet scan")
++		return
++	}
+ 
+ 	refs := make([]wallet.OutputRef, len(req.Inputs))
+ 	for i, inp := range req.Inputs {
+@@ -1501,7 +1519,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
+ 		refs[i].OutputIndex = inp.OutputIndex
+ 	}
+ 
+-	height := s.daemon.Chain().Height()
++	height := readyHeight
+ 
+ 	lease, inputs, err := s.wallet.ReserveSpecificInputs(refs, height, 2*time.Minute)
+ 	if err != nil {
+@@ -1540,6 +1558,10 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
+ 		}
+ 
+ 		change := inputTotal - totalSend - fee
++		if currentHeight, currentHash, ready := s.walletSendTip(); !ready || currentHeight != height || currentHash != sendHash {
++			writeError(w, http.StatusServiceUnavailable, "wallet or node changed while estimating the transaction; review it again")
++			return
++		}
+ 		writeJSON(w, http.StatusOK, map[string]any{
+ 			"dry_run":      true,
+ 			"fee":          fee,
+@@ -1560,6 +1582,11 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
+ 		return
+ 	}
+ 
++	if currentHeight, currentHash, ready := s.walletSendTip(); !ready || currentHeight != height || currentHash != sendHash {
++		s.wallet.ReleaseInputLease(result.InputLease)
++		writeError(w, http.StatusServiceUnavailable, "wallet or node changed while preparing the transaction; review it again")
++		return
++	}
+ 	if err := s.daemon.SubmitTransaction(result.TxData); err != nil {
+ 		s.wallet.ReleaseInputLease(result.InputLease)
+ 		writeSendError(w, r, err)
+@@ -1922,13 +1949,14 @@ func (s *APIServer) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
+ 
+ 	s.daemon.Miner().SetRewardKeys(wl.Keys().SpendPubKey, wl.Keys().ViewPubKey)
+ 
+-	chainHeight := s.daemon.Chain().Height()
+-	if chainHeight > 0 {
+-		wl.SetSyncedHeight(chainHeight)
+-		if err := wl.Save(); err != nil {
+-			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+-			return
+-		}
++	chainHeight, chainHash, _ := s.daemon.Chain().TipFast()
++	// A newly generated wallet has no outputs in earlier blocks. Anchor the
++	// skipped history to its exact canonical tip so readiness also detects a
++	// same-height reorg before the next block arrives.
++	wl.SetSyncedTip(chainHeight, chainHash)
++	if err := wl.Save(); err != nil {
++		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
++		return
+ 	}
+ 
+ 	wl.SetInputFilter(func(out *wallet.OwnedOutput) bool {
+@@ -1956,6 +1984,9 @@ func (s *APIServer) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
+ 	s.cli.passwordHashSet = true
+ 	s.cli.mu.Unlock()
+ 
++	// A block can connect between anchoring the new wallet and publishing it.
++	go s.catchUpScan()
++
+ 	writeJSON(w, http.StatusOK, map[string]any{
+ 		"created":  true,
+ 		"address":  wl.Address(),
+diff --git a/api_openapi_contract_test.go b/api_openapi_contract_test.go
+index 8043586..276d83b 100644
+--- a/api_openapi_contract_test.go
++++ b/api_openapi_contract_test.go
+@@ -308,6 +308,10 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
+ 		Spent:       false,
+ 	})
+ 
++	// This fixture skips real scanning; mark the synthetic wallet at its
++	// synthetic chain tip before exercising send validation.
++	w.SetSyncedTip(100, chain.BestHash())
++
+ 	// Second wallet for a valid non-self recipient address.
+ 	recipientFile := filepath.Join(t.TempDir(), "recipient.dat")
+ 	recipientWallet, err := wallet.NewWallet(recipientFile, []byte("pw"), defaultWalletConfig())
+diff --git a/api_send_idempotency_test.go b/api_send_idempotency_test.go
+index c179928..80ed50a 100644
+--- a/api_send_idempotency_test.go
++++ b/api_send_idempotency_test.go
+@@ -275,6 +275,8 @@ func TestHandleSendIdempotencySuccessfulReplayPersistsAcrossRestart(t *testing.T
+ 		t.Fatalf("failed to create sender wallet: %v", err)
+ 	}
+ 	seedCanonicalSpendableOutput(t, chain, storage, sender, 10_000_000)
++	// This fixture commits funding directly to storage and skips wallet scan.
++	sender.SetSyncedTip(100, chain.BestHash())
+ 	if err := sender.Save(); err != nil {
+ 		t.Fatalf("failed to save sender wallet: %v", err)
+ 	}
+@@ -451,6 +453,8 @@ func TestHandleSendInsufficientFundsAfterFeeAdjustmentIsBadRequest(t *testing.T)
+ 		t.Fatalf("failed to create sender wallet: %v", err)
+ 	}
+ 	seedCanonicalSpendableOutput(t, chain, storage, sender, 10_000_000)
++	// Keep the synthetic wallet caught up to the synthetic chain tip.
++	sender.SetSyncedTip(100, chain.BestHash())
+ 
+ 	recipient, err := wallet.NewWallet(filepath.Join(t.TempDir(), "recipient.dat"), []byte("pw"), defaultWalletConfig())
+ 	if err != nil {
+diff --git a/api_wallet_readiness.go b/api_wallet_readiness.go
+new file mode 100644
+index 0000000..5c39022
+--- /dev/null
++++ b/api_wallet_readiness.go
+@@ -0,0 +1,32 @@
++package main
++
++import "blocknet/wallet"
++
++// walletScanTip reports whether the wallet has scanned the exact canonical tip.
++// Compare the hash as well as the height: a same-height reorg can replace the
++// blocks that supplied wallet outputs. The second snapshot makes concurrent tip
++// or wallet progress changes conservatively report not ready.
++func walletScanTip(chain *Chain, w *wallet.Wallet) (height uint64, hash [32]byte, ready bool) {
++	if chain == nil || w == nil {
++		return 0, [32]byte{}, false
++	}
++	height, hash, _ = chain.TipFast()
++	walletHeight := w.SyncedHeight()
++	walletHash := w.SyncedHash()
++	if walletHeight != height || walletHash != hash {
++		return height, hash, false
++	}
++	againHeight, againHash, _ := chain.TipFast()
++	return height, hash, againHeight == height && againHash == hash &&
++		w.SyncedHeight() == walletHeight && w.SyncedHash() == walletHash
++}
++
++// walletSendTip also requires the network sync run to have ended. There is no
++// tolerated block lag for spending; a fresh output/spend can be in any block.
++func (s *APIServer) walletSendTip() (height uint64, hash [32]byte, ready bool) {
++	if s == nil || s.daemon == nil || s.daemon.Chain() == nil ||
++		(s.daemon.syncMgr != nil && s.daemon.syncMgr.IsSyncing()) {
++		return 0, [32]byte{}, false
++	}
++	return walletScanTip(s.daemon.Chain(), s.wallet)
++}
+diff --git a/api_wallet_readiness_test.go b/api_wallet_readiness_test.go
+new file mode 100644
+index 0000000..bcca80b
+--- /dev/null
++++ b/api_wallet_readiness_test.go
+@@ -0,0 +1,141 @@
++package main
++
++import (
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"blocknet/wallet"
++)
++
++func TestWalletScanTipRequiresExactCanonicalTip(t *testing.T) {
++	w, err := wallet.NewWallet(filepath.Join(t.TempDir(), "wallet.dat"), []byte("password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	chain := &Chain{}
++	tipHash := [32]byte{0xa1}
++	chain.tipSnap.Store(&tipSnapshot{height: 101, bestHash: tipHash})
++
++	for lag := uint64(1); lag <= 100; lag++ {
++		w.SetSyncedTip(101-lag, [32]byte{0xb2})
++		if _, _, ready := walletScanTip(chain, w); ready {
++			t.Fatalf("wallet %d blocks behind was marked ready", lag)
++		}
++	}
++	w.SetSyncedTip(101, [32]byte{0xb2})
++	if _, _, ready := walletScanTip(chain, w); ready {
++		t.Fatal("same-height different-hash wallet was marked ready")
++	}
++	w.SetSyncedHeight(101)
++	if _, _, ready := walletScanTip(chain, w); ready {
++		t.Fatal("legacy zero-hash wallet was marked ready")
++	}
++	w.SetSyncedTip(101, tipHash)
++	if _, _, ready := walletScanTip(chain, w); !ready {
++		t.Fatal("exactly synced wallet was not ready")
++	}
++}
++
++func TestWalletReadinessHandlersGateLagAndAllowSynced(t *testing.T) {
++	chain, _, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	chain.mu.Lock()
++	chain.height = 101
++	chain.bestHash = [32]byte{0xa1}
++	chain.publishTipLocked()
++	chain.mu.Unlock()
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++
++	w, err := wallet.NewWallet(filepath.Join(t.TempDir(), "wallet.dat"), []byte("password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	recipient, err := wallet.NewWallet(filepath.Join(t.TempDir(), "recipient.dat"), []byte("password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	api := NewAPIServer(d, w, nil, t.TempDir(), []byte("password"))
++
++	balance := func() bool {
++		t.Helper()
++		rr := mustMakeHTTPJSONRequest(t, http.HandlerFunc(api.handleBalance), http.MethodGet, "/api/wallet/balance", nil, nil)
++		if rr.Code != http.StatusOK {
++			t.Fatalf("balance status %d: %s", rr.Code, rr.Body.String())
++		}
++		var body struct {
++			Scanning bool `json:"scanning"`
++		}
++		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
++			t.Fatal(err)
++		}
++		return body.Scanning
++	}
++	requestID := 20
++	send := func(advanced bool) int {
++		t.Helper()
++		path := "/api/wallet/send"
++		body := fmt.Sprintf(`{"recipients":[{"address":%q,"amount":1}],"dry_run":true}`, recipient.Address())
++		handler := api.handleSend
++		if advanced {
++			path = "/api/wallet/send/advanced"
++			body = fmt.Sprintf(`{"recipients":[{"address":%q,"amount":1}],"inputs":[{"txid":%q,"output_index":0}],"dry_run":true}`, recipient.Address(), strings.Repeat("0", 64))
++			handler = api.handleSendAdvanced
++		}
++		rr := httptest.NewRecorder()
++		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
++		requestID++
++		req.RemoteAddr = fmt.Sprintf("198.51.100.%d:1234", requestID)
++		handler(rr, req)
++		return rr.Code
++	}
++
++	for _, lag := range []uint64{1, 50, 100} {
++		w.SetSyncedTip(101-lag, [32]byte{0xb2})
++		if !balance() || send(false) != http.StatusServiceUnavailable || send(true) != http.StatusServiceUnavailable {
++			t.Fatalf("wallet lag %d was not gated by balance and both send routes", lag)
++		}
++	}
++	w.SetSyncedTip(101, [32]byte{0xb2})
++	if !balance() || send(false) != http.StatusServiceUnavailable {
++		t.Fatal("same-height reorg was not gated")
++	}
++	w.SetSyncedTip(101, [32]byte{0xa1})
++	if balance() {
++		t.Fatal("exactly synced wallet still reports scanning")
++	}
++	if got := send(false); got != http.StatusBadRequest {
++		t.Fatalf("synced send did not reach ordinary insufficient-funds validation: %d", got)
++	}
++}
++
++func TestCreateWalletAnchorsExactTipForReadiness(t *testing.T) {
++	chain, _, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	chain.mu.Lock()
++	chain.height = 3
++	chain.bestHash = [32]byte{0xc3}
++	chain.publishTipLocked()
++	chain.mu.Unlock()
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++
++	api := NewAPIServer(d, nil, nil, t.TempDir(), nil)
++	api.cli = &CLI{walletFile: filepath.Join(t.TempDir(), "new.wallet.dat")}
++	rr := mustMakeHTTPJSONRequest(t, http.HandlerFunc(api.handleCreateWallet), http.MethodPost,
++		"/api/wallet/create", []byte(`{"password":"disposable-password"}`),
++		map[string]string{"Content-Type": "application/json"})
++	if rr.Code != http.StatusOK {
++		t.Fatalf("create status %d: %s", rr.Code, rr.Body.String())
++	}
++	if height, hash, ready := walletScanTip(chain, api.wallet); !ready || height != 3 || hash != ([32]byte{0xc3}) {
++		t.Fatalf("new wallet did not anchor exact tip: height=%d hash=%x ready=%v", height, hash, ready)
++	}
++}

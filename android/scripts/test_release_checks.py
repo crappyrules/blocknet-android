@@ -8,9 +8,9 @@ import unittest
 from verify_release_metadata import OWNER_CERT_SHA256, verify_metadata
 
 
-TAG = 'v1.0.0-preview.2'
+TAG = 'v1.0.0-preview.3'
 CERT = f'Number of signers: 1\nSigner #1 certificate SHA-256 digest: {OWNER_CERT_SHA256}\n'
-BADGING = "package: name='com.blocknet.wallet' versionCode='2' versionName='1.0.0-preview.2'\n"
+BADGING = "package: name='com.blocknet.wallet' versionCode='3' versionName='1.0.0-preview.3'\n"
 TAG_CHECK = Path(__file__).with_name('verify_release_tag.py')
 
 
@@ -22,9 +22,13 @@ class ReleaseMetadataTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'owner signing certificate'):
             verify_metadata(CERT.replace(OWNER_CERT_SHA256, '0' * 64), BADGING, TAG)
         with self.assertRaisesRegex(ValueError, 'package/version'):
-            verify_metadata(CERT, BADGING.replace('versionCode=\'2\'', 'versionCode=\'1\''), TAG)
+            verify_metadata(CERT, BADGING.replace('versionCode=\'3\'', 'versionCode=\'1\''), TAG)
         with self.assertRaisesRegex(ValueError, 'package/version'):
-            verify_metadata(CERT, BADGING, 'v1.0.0-preview.3')
+            verify_metadata(CERT, BADGING.replace('versionCode=\'3\'', 'versionCode=\'4\''), TAG)
+        with self.assertRaisesRegex(ValueError, 'package/version'):
+            verify_metadata(CERT, BADGING.replace('versionName=\'1.0.0-preview.3\'', 'versionName=\'1.0.0-preview.4\''), TAG)
+        with self.assertRaisesRegex(ValueError, 'reviewed version'):
+            verify_metadata(CERT, BADGING, 'v1.0.0-preview.4')
 
 
 class ReleaseTagTest(unittest.TestCase):

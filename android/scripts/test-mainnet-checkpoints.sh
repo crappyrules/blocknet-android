@@ -17,7 +17,7 @@ assert_mainnet_stopped() {
     "'if [ -r no_backup/blocknet/mainnet/core.pid ]; then p=\$(cat no_backup/blocknet/mainnet/core.pid); if kill -0 \"\$p\" 2>/dev/null; then echo Existing_mainnet_node_must_be_stopped_gracefully_before_install >&2; exit 42; fi; fi'"
 }
 assert_mainnet_stopped
-./gradlew -PofflineWalletViewDir="${OFFLINE_WALLET_VIEW_DIR:?Build the pinned offline wallet reader and set OFFLINE_WALLET_VIEW_DIR}" -PcheckpointIntegration assembleDebug assembleDebugAndroidTest
+./gradlew -PcoreMobileDir="${CORE_MOBILE_DIR:?Build the reviewed mobile Core and set CORE_MOBILE_DIR}" -PofflineWalletViewDir="${OFFLINE_WALLET_VIEW_DIR:?Build the pinned offline wallet reader and set OFFLINE_WALLET_VIEW_DIR}" -PcheckpointIntegration assembleDebug assembleDebugAndroidTest
 assert_mainnet_stopped
 "$adb_bin" -s "$device_serial" install --user 0 -r app/build/outputs/apk/debug/app-debug.apk
 "$adb_bin" -s "$device_serial" install --user 0 -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk

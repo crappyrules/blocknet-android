@@ -1,0 +1,463 @@
+From dfc38c34b5372f97c7f175f407fe251c1e3881e3 Mon Sep 17 00:00:00 2001
+From: Codex Review <codex-review@example.invalid>
+Date: Sat, 17 Oct 2026 18:33:59 -0400
+Subject: [PATCH] Serialize and atomically replace encrypted wallet saves
+
+---
+ wallet/wallet.go             | 154 +++++++++++++++++++++--------------
+ wallet/wallet_atomic.go      |  56 +++++++++++++
+ wallet/wallet_atomic_test.go | 130 +++++++++++++++++++++++++++++
+ 3 files changed, 280 insertions(+), 60 deletions(-)
+ create mode 100644 wallet/wallet_atomic.go
+ create mode 100644 wallet/wallet_atomic_test.go
+
+diff --git a/wallet/wallet.go b/wallet/wallet.go
+index eaa8318..9a76b79 100644
+--- a/wallet/wallet.go
++++ b/wallet/wallet.go
+@@ -63,7 +63,9 @@ func backupWalletFile(walletFile string, address string) {
+ 	}
+ 
+ 	suffix := "-" + address + backupSuffix
+-	// Remove any previous backups for this address (visible and hidden).
++	// Keep older backups until both replacement copies are durable. An
++	// interrupted copy must not destroy the last usable backup.
++	var previous []string
+ 	if entries, err := os.ReadDir(dir); err == nil {
+ 		for _, e := range entries {
+ 			n := e.Name()
+@@ -72,15 +74,24 @@ func backupWalletFile(walletFile string, address string) {
+ 				bare = bare[1:]
+ 			}
+ 			if strings.HasSuffix(bare, suffix) {
+-				os.Remove(filepath.Join(dir, n))
++				previous = append(previous, n)
+ 			}
+ 		}
+ 	}
+ 
+-	stamp := time.Now().Format("2006-01-02-150405")
++	stamp := time.Now().Format("2006-01-02-150405.000000000")
+ 	name := stamp + suffix
+-	os.WriteFile(filepath.Join(dir, name), data, 0o600)
+-	os.WriteFile(filepath.Join(dir, "."+name), data, 0o600)
++	if err := atomicReplaceWalletFile(filepath.Join(dir, name), data, nil, nil); err != nil {
++		return
++	}
++	if err := atomicReplaceWalletFile(filepath.Join(dir, "."+name), data, nil, nil); err != nil {
++		return
++	}
++	for _, n := range previous {
++		if n != name && n != "."+name {
++			_ = os.Remove(filepath.Join(dir, n))
++		}
++	}
+ }
+ 
+ // BackfillWalletBackups scans a directory for .dat wallet files that don't
+@@ -323,16 +334,16 @@ func (r *SendRecord) TotalAmount() uint64 {
+ 
+ // WalletData is the serializable wallet state
+ type WalletData struct {
+-	Version      uint32         `json:"version"`
+-	ViewOnly     bool           `json:"view_only"`          // True if this is a view-only wallet
+-	Mnemonic     string         `json:"mnemonic,omitempty"` // BIP39 12-word recovery phrase (empty for view-only)
+-	Keys         StealthKeys    `json:"keys"`
+-	Outputs      []*OwnedOutput `json:"outputs"`
+-	SendHistory  []*SendRecord  `json:"send_history,omitempty"` // Track outgoing transactions
++	Version        uint32           `json:"version"`
++	ViewOnly       bool             `json:"view_only"`          // True if this is a view-only wallet
++	Mnemonic       string           `json:"mnemonic,omitempty"` // BIP39 12-word recovery phrase (empty for view-only)
++	Keys           StealthKeys      `json:"keys"`
++	Outputs        []*OwnedOutput   `json:"outputs"`
++	SendHistory    []*SendRecord    `json:"send_history,omitempty"`    // Track outgoing transactions
+ 	PendingCredits []*PendingCredit `json:"pending_credits,omitempty"` // UX-only pending credits (e.g. unconfirmed change)
+-	SyncedHeight uint64         `json:"synced_height"`
+-	SyncedHash   [32]byte       `json:"synced_hash"` // Hash of the block at SyncedHeight, used to detect reorgs. Zero for wallets synced before this was tracked.
+-	CreatedAt    int64          `json:"created_at"`
++	SyncedHeight   uint64           `json:"synced_height"`
++	SyncedHash     [32]byte         `json:"synced_hash"` // Hash of the block at SyncedHeight, used to detect reorgs. Zero for wallets synced before this was tracked.
++	CreatedAt      int64            `json:"created_at"`
+ }
+ 
+ // ViewOnlyKeys contains only the keys needed for a view-only wallet
+@@ -371,11 +382,19 @@ type encMeta struct {
+ // Wallet manages keys and tracks owned outputs
+ type Wallet struct {
+ 	mu sync.RWMutex
++	// saveMu serializes snapshots and replacement of this wallet file. The data
++	// lock alone cannot order two encrypted writes after it is released.
++	saveMu sync.Mutex
+ 
+ 	data     WalletData
+ 	filename string
+ 	password []byte // kept in memory for re-encryption on save
+ 	enc      encMeta
++	// Mnemonic is cleared from data after creation/load. Imported-key wallets
++	// legitimately have none; mnemonic wallets must never silently lose theirs.
++	hasMnemonic bool
++	// Test-only fault barrier; nil in production wallets.
++	beforeSaveReplace func() error
+ 
+ 	// inputReservations tracks outputs reserved for pending spends.
+ 	// Reservation is best-effort: it prevents concurrent builders from selecting the
+@@ -393,13 +412,13 @@ type Wallet struct {
+ 	memoDecryptLastHeight atomic.Uint64
+ 
+ 	// Callbacks for crypto operations (set by main package)
+-	generateStealthKeys        func() (*StealthKeys, error)
+-	deriveStealthAddress       func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error)
+-	checkStealthOutput         func(txPub, outputPub, viewPriv, spendPub [32]byte) bool
+-	deriveSpendKey             func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error)
+-	deriveOutputSecret         func(txPub, viewPriv [32]byte) ([32]byte, error)
+-	deriveOutputSecretIndexed  func(txPub, viewPriv [32]byte, outputIndex uint32) ([32]byte, error)
+-	generateKeypairFromSeed    func(seed [32]byte) (priv, pub [32]byte, err error)
++	generateStealthKeys       func() (*StealthKeys, error)
++	deriveStealthAddress      func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error)
++	checkStealthOutput        func(txPub, outputPub, viewPriv, spendPub [32]byte) bool
++	deriveSpendKey            func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error)
++	deriveOutputSecret        func(txPub, viewPriv [32]byte) ([32]byte, error)
++	deriveOutputSecretIndexed func(txPub, viewPriv [32]byte, outputIndex uint32) ([32]byte, error)
++	generateKeypairFromSeed   func(seed [32]byte) (priv, pub [32]byte, err error)
+ }
+ 
+ // PendingCredit tracks a credit we expect to receive but haven't yet scanned
+@@ -460,16 +479,17 @@ func NewWalletFromMnemonic(filename string, password []byte, mnemonic string, cf
+ 	}
+ 
+ 	w := &Wallet{
+-		filename:                   filename,
+-		password:                   cloneBytes(password),
+-		inputReservations:          make(map[reservedOutpoint]inputReservation),
+-		generateStealthKeys:        cfg.GenerateStealthKeys,
+-		deriveStealthAddress:       cfg.DeriveStealthAddress,
+-		checkStealthOutput:         cfg.CheckStealthOutput,
+-		deriveSpendKey:             cfg.DeriveSpendKey,
+-		deriveOutputSecret:         cfg.DeriveOutputSecret,
+-		deriveOutputSecretIndexed:  cfg.DeriveOutputSecretIndexed,
+-		generateKeypairFromSeed:    cfg.GenerateKeypairFromSeed,
++		filename:                  filename,
++		password:                  cloneBytes(password),
++		hasMnemonic:               true,
++		inputReservations:         make(map[reservedOutpoint]inputReservation),
++		generateStealthKeys:       cfg.GenerateStealthKeys,
++		deriveStealthAddress:      cfg.DeriveStealthAddress,
++		checkStealthOutput:        cfg.CheckStealthOutput,
++		deriveSpendKey:            cfg.DeriveSpendKey,
++		deriveOutputSecret:        cfg.DeriveOutputSecret,
++		deriveOutputSecretIndexed: cfg.DeriveOutputSecretIndexed,
++		generateKeypairFromSeed:   cfg.GenerateKeypairFromSeed,
+ 	}
+ 
+ 	w.data = WalletData{
+@@ -497,16 +517,16 @@ func NewWalletFromMnemonic(filename string, password []byte, mnemonic string, cf
+ // This path does not include a BIP39 mnemonic in the wallet file.
+ func NewWalletFromStealthKeys(filename string, password []byte, keys StealthKeys, cfg WalletConfig) (*Wallet, error) {
+ 	w := &Wallet{
+-		filename:                   filename,
+-		password:                   cloneBytes(password),
+-		inputReservations:          make(map[reservedOutpoint]inputReservation),
+-		generateStealthKeys:        cfg.GenerateStealthKeys,
+-		deriveStealthAddress:       cfg.DeriveStealthAddress,
+-		checkStealthOutput:         cfg.CheckStealthOutput,
+-		deriveSpendKey:             cfg.DeriveSpendKey,
+-		deriveOutputSecret:         cfg.DeriveOutputSecret,
+-		deriveOutputSecretIndexed:  cfg.DeriveOutputSecretIndexed,
+-		generateKeypairFromSeed:    cfg.GenerateKeypairFromSeed,
++		filename:                  filename,
++		password:                  cloneBytes(password),
++		inputReservations:         make(map[reservedOutpoint]inputReservation),
++		generateStealthKeys:       cfg.GenerateStealthKeys,
++		deriveStealthAddress:      cfg.DeriveStealthAddress,
++		checkStealthOutput:        cfg.CheckStealthOutput,
++		deriveSpendKey:            cfg.DeriveSpendKey,
++		deriveOutputSecret:        cfg.DeriveOutputSecret,
++		deriveOutputSecretIndexed: cfg.DeriveOutputSecretIndexed,
++		generateKeypairFromSeed:   cfg.GenerateKeypairFromSeed,
+ 	}
+ 
+ 	w.data = WalletData{
+@@ -545,21 +565,23 @@ func LoadWallet(filename string, password []byte, cfg WalletConfig) (*Wallet, er
+ 		return nil, fmt.Errorf("failed to parse wallet data: %w", err)
+ 	}
+ 
++	hasMnemonic := data.Mnemonic != ""
+ 	data.Mnemonic = ""
+ 
+ 	return &Wallet{
+-		data:                       data,
+-		filename:                   filename,
+-		password:                   cloneBytes(password),
+-		enc:                        em,
+-		inputReservations:          make(map[reservedOutpoint]inputReservation),
+-		generateStealthKeys:        cfg.GenerateStealthKeys,
+-		deriveStealthAddress:       cfg.DeriveStealthAddress,
+-		generateKeypairFromSeed:    cfg.GenerateKeypairFromSeed,
+-		checkStealthOutput:         cfg.CheckStealthOutput,
+-		deriveSpendKey:             cfg.DeriveSpendKey,
+-		deriveOutputSecret:         cfg.DeriveOutputSecret,
+-		deriveOutputSecretIndexed:  cfg.DeriveOutputSecretIndexed,
++		data:                      data,
++		filename:                  filename,
++		password:                  cloneBytes(password),
++		hasMnemonic:               hasMnemonic,
++		enc:                       em,
++		inputReservations:         make(map[reservedOutpoint]inputReservation),
++		generateStealthKeys:       cfg.GenerateStealthKeys,
++		deriveStealthAddress:      cfg.DeriveStealthAddress,
++		generateKeypairFromSeed:   cfg.GenerateKeypairFromSeed,
++		checkStealthOutput:        cfg.CheckStealthOutput,
++		deriveSpendKey:            cfg.DeriveSpendKey,
++		deriveOutputSecret:        cfg.DeriveOutputSecret,
++		deriveOutputSecretIndexed: cfg.DeriveOutputSecretIndexed,
+ 	}, nil
+ }
+ 
+@@ -609,19 +631,31 @@ func LoadOrCreateWallet(filename string, password []byte, cfg WalletConfig) (*Wa
+ 
+ // Save encrypts and writes wallet to disk
+ func (w *Wallet) Save() error {
++	w.saveMu.Lock()
++	defer w.saveMu.Unlock()
++
+ 	w.mu.RLock()
+ 	dataToPersist := w.data
+-	if !dataToPersist.ViewOnly && dataToPersist.Mnemonic == "" {
+-		if mnemonic, err := w.readMnemonicFromDisk(); err == nil && mnemonic != "" {
+-			dataToPersist.Mnemonic = mnemonic
++	if w.hasMnemonic && dataToPersist.Mnemonic == "" {
++		mnemonic, err := w.readMnemonicFromDisk()
++		if err != nil {
++			w.mu.RUnlock()
++			return fmt.Errorf("cannot preserve wallet recovery phrase: %w", err)
+ 		}
++		if mnemonic == "" {
++			w.mu.RUnlock()
++			return errors.New("cannot preserve wallet recovery phrase: missing from encrypted file")
++		}
++		dataToPersist.Mnemonic = mnemonic
+ 	}
+-	password := w.password
++	// Marshal while holding the data lock: WalletData contains pointer slices,
++	// so a shallow copy cannot be used after a concurrent scan mutates outputs.
++	plaintext, err := json.MarshalIndent(dataToPersist, "", "  ")
++	password := cloneBytes(w.password)
+ 	filename := w.filename
+ 	address := w.data.Keys.Address()
+ 	w.mu.RUnlock()
+-
+-	plaintext, err := json.MarshalIndent(dataToPersist, "", "  ")
++	defer wipeBytes(password)
+ 	if err != nil {
+ 		return fmt.Errorf("failed to marshal wallet: %w", err)
+ 	}
+@@ -632,7 +666,7 @@ func (w *Wallet) Save() error {
+ 		return fmt.Errorf("failed to encrypt wallet: %w", err)
+ 	}
+ 
+-	if err := os.WriteFile(filename, encrypted, 0600); err != nil {
++	if err := atomicReplaceWalletFile(filename, encrypted, nil, w.beforeSaveReplace); err != nil {
+ 		return fmt.Errorf("failed to write wallet file: %w", err)
+ 	}
+ 
+diff --git a/wallet/wallet_atomic.go b/wallet/wallet_atomic.go
+new file mode 100644
+index 0000000..ba037ef
+--- /dev/null
++++ b/wallet/wallet_atomic.go
+@@ -0,0 +1,56 @@
++package wallet
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++)
++
++// atomicReplaceWalletFile keeps the old encrypted file intact until the new
++// bytes have been fully written and synced in the same directory. The optional
++// callbacks are used only by deterministic fault-injection tests.
++func atomicReplaceWalletFile(filename string, data []byte, write func(*os.File, []byte) (int, error), beforeRename func() error) error {
++	dir := filepath.Dir(filename)
++	tmp, err := os.CreateTemp(dir, "."+filepath.Base(filename)+".tmp-")
++	if err != nil {
++		return err
++	}
++	tmpName := tmp.Name()
++	defer os.Remove(tmpName)
++	if write == nil {
++		write = func(file *os.File, bytes []byte) (int, error) { return file.Write(bytes) }
++	}
++	if err := tmp.Chmod(0o600); err != nil {
++		_ = tmp.Close()
++		return err
++	}
++	n, err := write(tmp, data)
++	if err == nil && n != len(data) {
++		err = fmt.Errorf("short wallet write: %d of %d bytes", n, len(data))
++	}
++	if err != nil {
++		_ = tmp.Close()
++		return err
++	}
++	if err := tmp.Sync(); err != nil {
++		_ = tmp.Close()
++		return err
++	}
++	if err := tmp.Close(); err != nil {
++		return err
++	}
++	if beforeRename != nil {
++		if err := beforeRename(); err != nil {
++			return err
++		}
++	}
++	if err := os.Rename(tmpName, filename); err != nil {
++		return err
++	}
++	parent, err := os.Open(dir)
++	if err != nil {
++		return err
++	}
++	defer parent.Close()
++	return parent.Sync()
++}
+diff --git a/wallet/wallet_atomic_test.go b/wallet/wallet_atomic_test.go
+new file mode 100644
+index 0000000..5619c1b
+--- /dev/null
++++ b/wallet/wallet_atomic_test.go
+@@ -0,0 +1,130 @@
++package wallet
++
++import (
++	"bytes"
++	"errors"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++)
++
++func TestAtomicReplaceWalletFilePreservesOldBytesOnInterruptedWrite(t *testing.T) {
++	filename := filepath.Join(t.TempDir(), "disposable.wallet")
++	old := []byte("old encrypted wallet")
++	if err := os.WriteFile(filename, old, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	stages := []struct {
++		name         string
++		write        func(*os.File, []byte) (int, error)
++		beforeRename func() error
++	}{
++		{"short write", func(f *os.File, b []byte) (int, error) { return f.Write(b[:len(b)/2]) }, nil},
++		{"interrupted before rename", nil, func() error { return errors.New("injected interruption") }},
++	}
++	for _, stage := range stages {
++		t.Run(stage.name, func(t *testing.T) {
++			if err := atomicReplaceWalletFile(filename, []byte("new encrypted wallet"), stage.write, stage.beforeRename); err == nil {
++				t.Fatal("injected failure returned success")
++			}
++			got, err := os.ReadFile(filename)
++			if err != nil || !bytes.Equal(got, old) {
++				t.Fatalf("old wallet changed: %q, %v", got, err)
++			}
++		})
++	}
++}
++
++func TestWalletSaveRejectsMnemonicRereadFailureAndPreservesFile(t *testing.T) {
++	cfg := testWalletConfigNoCryptoDeps(t)
++	filename := filepath.Join(t.TempDir(), "disposable.wallet")
++	mnemonic, err := GenerateMnemonic()
++	if err != nil {
++		t.Fatal(err)
++	}
++	password := []byte("disposable-password")
++	w, err := NewWalletFromMnemonic(filename, password, mnemonic, cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	old, err := os.ReadFile(filename)
++	if err != nil {
++		t.Fatal(err)
++	}
++	// A wrong in-memory password simulates a deterministic decrypt failure of
++	// the prior file, without damaging the fixture we need to verify afterward.
++	w.mu.Lock()
++	w.password = []byte("wrong-password")
++	w.mu.Unlock()
++	if err := w.Save(); err == nil {
++		t.Fatal("save discarded an expected recovery phrase")
++	}
++	w.mu.Lock()
++	w.password = cloneBytes(password)
++	w.mu.Unlock()
++	got, err := os.ReadFile(filename)
++	if err != nil || !bytes.Equal(got, old) {
++		t.Fatalf("failed save changed encrypted file: %v", err)
++	}
++	loaded, err := LoadWallet(filename, password, cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	phrase, err := loaded.Mnemonic()
++	if err != nil || phrase != mnemonic {
++		t.Fatalf("recovery phrase changed: %v", err)
++	}
++}
++
++func TestWalletConcurrentSavesAndMutationReloadNewestState(t *testing.T) {
++	cfg := testWalletConfigNoCryptoDeps(t)
++	filename := filepath.Join(t.TempDir(), "disposable.wallet")
++	password := []byte("disposable-password")
++	var keys StealthKeys
++	keys.SpendPubKey[0] = 1
++	w, err := NewWalletFromStealthKeys(filename, password, keys, cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	firstReady, releaseFirst := make(chan struct{}), make(chan struct{})
++	first := true
++	w.beforeSaveReplace = func() error {
++		if first {
++			first = false
++			close(firstReady)
++			<-releaseFirst
++		}
++		return nil
++	}
++	w.SetSyncedTip(1, [32]byte{1})
++	firstDone := make(chan error, 1)
++	go func() { firstDone <- w.Save() }()
++	select {
++	case <-firstReady:
++	case <-time.After(5 * time.Second):
++		t.Fatal("first save did not reach replace barrier")
++	}
++	w.SetSyncedTip(2, [32]byte{2})
++	secondDone := make(chan error, 1)
++	go func() { secondDone <- w.Save() }()
++	select {
++	case err := <-secondDone:
++		t.Fatalf("second save passed the first save: %v", err)
++	case <-time.After(20 * time.Millisecond):
++	}
++	close(releaseFirst)
++	if err := <-firstDone; err != nil {
++		t.Fatal(err)
++	}
++	if err := <-secondDone; err != nil {
++		t.Fatal(err)
++	}
++	loaded, err := LoadWallet(filename, password, cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if loaded.SyncedHeight() != 2 || loaded.SyncedHash() != ([32]byte{2}) {
++		t.Fatalf("latest wallet state not durable: %d %x", loaded.SyncedHeight(), loaded.SyncedHash())
++	}
++}
+-- 
+2.55.0
+

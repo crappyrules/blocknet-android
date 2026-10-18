@@ -1,10 +1,17 @@
 # Native wallet acceptance — October 15, 2026
 
+This records the earlier installed activity-Core build. The current mobile
+candidate removes Mantle and has not inherited this device acceptance.
+
 ## Delivered artifact
 
 `builds/blocknet-wallet-1.0.0-arm64-debug.apk` is installed for user 0 on the Samsung Galaxy S22 (SM-S901U), Android 16/API 36. Its SHA-256 is `1e48f41d35462194af23f34b575623dfc9a4b8d2ef0b0137b820675cf86584a5`; an on-device hash of the installed APK matched the distributable.
 
-The delivered build includes the reviewed Core activity extension. The supplied Mantle executable remains unchanged. The original supplied Core is preserved in `android-test` and in the separately verified fallback APK. Source, patches, lockfile and binary hashes are recorded in `builds/core-activity1/build-provenance.json`; this is a source rebuild, not a claim to reproduce the producer's unavailable dirty build.
+This section records a historical activity-Core acceptance run. The current
+release tree removes its legacy executable inputs; Git history retains that
+earlier evidence. The preview.3 candidate builds pinned upstream Core with
+reviewed mobile patches and packages no Mantle executable. Its build
+provenance records the source, patches, lockfile, and binary hashes.
 
 Acceptance logs are retained in `builds/acceptance/`. The build directories are ignored artifacts; application source and repeatable tests are under `android/`.
 
@@ -27,7 +34,7 @@ Acceptance logs are retained in `builds/acceptance/`. The build directories are 
 | Explorer links | History hashes construct the desktop wallet's fixed HTTPS explorer URL only for complete 64-hex transaction IDs. Seven focused intent validity checks passed; card details remain available. |
 | Safe payment construction and interrupted-send recovery | Review binds network, wallet, recipient, amount, memo, fee and expiry; durable idempotency precedes send. Six ARM64 in-process tests passed for synthetic funded sends, replay/restart recovery, fee failures, encrypted memos and change outputs. Nine additional ARM64 tests cover activity lock guards, commitments/range proofs, stealth keys, ring signatures, RingCT inflation rejection and recovery vectors. No real transaction was broadcast. |
 
-The final application gate passed **45 unit tests, lint, APK provenance/resource verification and 60 Android 16 UI checks**. The default supplied-Core build was also restored and verified, and the default verifier rejected an alternate Core without explicit selection.
+That historical application gate passed **45 unit tests, lint, APK provenance/resource verification and 60 Android 16 UI checks**. The current build requires an explicit reviewed mobile Core; no legacy fallback is packaged.
 
 ## Practical verification limits
 

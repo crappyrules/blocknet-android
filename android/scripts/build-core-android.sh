@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# Experimental source rebuild only. Never replaces the supplied APK executable or installs anything.
+# Rebuild the pinned mobile Core from reviewed patches; never installs anything.
 set -euo pipefail
-source_checkout="${1:?Usage: build-core-android.sh SOURCE_CHECKOUT NEW_OUTPUT_DIRECTORY [PATCH_FILE]}"
+source_checkout="${1:?Usage: build-core-android.sh SOURCE_CHECKOUT NEW_OUTPUT_DIRECTORY ACTIVITY_PATCH MOBILE_PATCH}"
 output_directory="${2:?A fresh output directory is required}"
-patch_file="${3:-}"
+patch_file="${3:?The reviewed activity patch is required}"
+mobile_patch="${4:?The reviewed mobile patch is required}"
 baseline=5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e
 ndk_revision=30.0.16248370
 android_api="${ANDROID_API:-24}"
 script_root="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 source_checkout="$(realpath -- "$source_checkout")"
 output_directory="$(realpath -m -- "$output_directory")"
-supplied_root="$(realpath -m -- "$script_root/../android-test")"
-if [[ -n "$patch_file" ]]; then patch_file="$(realpath -- "$patch_file")"; [[ -r "$patch_file" ]]; fi
+patch_file="$(realpath -- "$patch_file")"
+mobile_patch="$(realpath -- "$mobile_patch")"
+[[ -r "$patch_file" && -r "$mobile_patch" ]]
 [[ ! -e "$output_directory" ]] || { printf 'Output directory must not already exist.\n' >&2; exit 1; }
-[[ "$output_directory" != "$source_checkout" && "$output_directory" != "$source_checkout/"* && "$output_directory" != "$supplied_root" && "$output_directory" != "$supplied_root/"* ]] || { printf 'Output must be isolated from source and supplied executables.\n' >&2; exit 1; }
-[[ "$(git -C "$source_checkout" rev-parse HEAD)" = "$baseline" ]] || { printf 'Source checkout must be at the recorded supplied-binary baseline commit.\n' >&2; exit 1; }
+[[ "$output_directory" != "$source_checkout" && "$output_directory" != "$source_checkout/"* ]] || { printf 'Output must be isolated from source.\n' >&2; exit 1; }
+[[ "$(git -C "$source_checkout" rev-parse HEAD)" = "$baseline" ]] || { printf 'Source checkout must be at the pinned Core commit.\n' >&2; exit 1; }
 for tool in git tar python3 cargo rustc rustup go install grep realpath; do
     command -v "$tool" >/dev/null || { printf 'Required build tool is missing: %s\n' "$tool" >&2; exit 1; }
 done
@@ -75,6 +77,21 @@ git -C "$work" apply --check "$announcement_patch"
 git -C "$work" apply "$announcement_patch"
 git -C "$work" apply --reverse --check "$announcement_patch"
 cp -- "$announcement_patch" "$output_directory/onchain-announcement-scan.patch"
+if [[ -n "$mobile_patch" ]]; then
+    [[ "$mobile_patch" = "$(realpath -- "$script_root/core-patches/0004-mobile-client-policy.patch")" ]] || { printf 'Mobile patch must be the reviewed 0004 file.\n' >&2; exit 1; }
+    git -C "$work" apply --check "$mobile_patch"
+    git -C "$work" apply "$mobile_patch"
+    git -C "$work" apply --reverse --check "$mobile_patch"
+    cp -- "$mobile_patch" "$output_directory/mobile-client-policy.patch"
+    for name in 0005-core-wallet-persistence.patch 0006-core-wallet-scan-serialization.patch 0007-core-wallet-send-readiness.patch 0008-core-wallet-send-reorg-activity.patch 0009-core-wallet-notification-overflow.patch; do
+        reviewed="$script_root/core-patches/$name"
+        [[ -r "$reviewed" ]] || { printf 'Missing reviewed mobile Core patch: %s\n' "$name" >&2; exit 1; }
+        git -C "$work" apply --check "$reviewed"
+        git -C "$work" apply "$reviewed"
+        git -C "$work" apply --reverse --check "$reviewed"
+        cp -- "$reviewed" "$output_directory/$name"
+    done
+fi
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$cc"
 export CC_aarch64_linux_android="$cc" AR_aarch64_linux_android="$toolchain/llvm-ar"
 export GOTOOLCHAIN=local
@@ -83,6 +100,14 @@ cargo build --manifest-path "$work/crypto-rs/Cargo.toml" --target-dir "$output_d
 mkdir -p "$work/crypto-rs/target/release"
 install -m 0644 "$output_directory/host-rust-target/release/libblocknet_crypto.a" "$work/crypto-rs/target/release/libblocknet_crypto.a"
 (cd "$work" && CGO_ENABLED=1 go test -run '^TestAnnouncement' -count=1 .)
+if [[ -n "$mobile_patch" ]]; then
+    (cd "$work" && CGO_ENABLED=1 go test -mod=readonly -run '^TestMobile' -count=1 .)
+    (cd "$work" && CGO_ENABLED=1 go test -mod=readonly -run '^TestMobileClient' -count=1 ./p2p)
+    (cd "$work" && CGO_ENABLED=1 go test -mod=readonly -run '^Test(ApplyBlockToWalletIgnoresStaleCanonicalEvent|CatchUpAnchorsUnhashedGenesisForReadiness|ExplicitSyncRepairsSameHeightForkForReadiness|CatchUpAndLiveScanSerializeAndReload|WalletScanTipRequiresExactCanonicalTip|WalletReadinessHandlersGateLagAndAllowSynced|CreateWalletAnchorsExactTipForReadiness)$' -count=1 .)
+    (cd "$work" && CGO_ENABLED=1 go test -mod=readonly -run '^Test(SendAndAdvancedSendHoldWalletThroughBroadcastAndPersistence|WalletActivityScanningMatchesCanonicalTip|QueuedForwardBlockRepairsCanonicalTipWithoutCorrectionEvent|CatchUpReorgBetweenFetchAndScanRepairsCanonicalTip)$' -count=1 .)
+    (cd "$work" && CGO_ENABLED=1 go test -mod=readonly -run '^Test(WalletBlockQueueRetainsNewestInOrder|WalletAutoScanRecoversDroppedCanonicalBurst|WalletBlockOverflowReorgAndSideBranch)$' -count=1 .)
+    (cd "$work" && CGO_ENABLED=1 go test -mod=readonly -run '^Test(AtomicReplaceWalletFilePreservesOldBytesOnInterruptedWrite|WalletSaveRejectsMnemonicRereadFailureAndPreservesFile|WalletConcurrentSavesAndMutationReloadNewestState)$' -count=1 ./wallet)
+fi
 export CC="$cc" CXX="$cxx" AR="$toolchain/llvm-ar"
 cargo build --manifest-path "$work/crypto-rs/Cargo.toml" --target-dir "$output_directory/rust-target" --locked --release --target aarch64-linux-android
 mkdir -p "$work/crypto-rs/target/release"
@@ -91,7 +116,7 @@ core="$output_directory/blocknet-core-arm64-android-experimental"
 (cd "$work" && CGO_ENABLED=1 GOOS=android GOARCH=arm64 GOARM64=v8.0 go build -mod=readonly -trimpath -buildvcs=false -buildmode=pie -ldflags='-s -w -checklinkname=0' -o "$core" .)
 "$toolchain/llvm-readelf" -h "$core" > "$output_directory/elf-header.txt"
 "$toolchain/llvm-readelf" -l "$core" > "$output_directory/elf-program-headers.txt"
-export BLOCKNET_BUILD_OUTPUT="$output_directory" BLOCKNET_BUILD_BASELINE="$baseline" BLOCKNET_BUILD_ORIGINAL="$script_root/../android-test/android-test/blocknet-core-arm64-android"
+export BLOCKNET_BUILD_OUTPUT="$output_directory" BLOCKNET_BUILD_BASELINE="$baseline"
 python3 - <<'PY'
 import hashlib,json,os,subprocess
 from pathlib import Path
@@ -100,13 +125,13 @@ header=(out/'elf-header.txt').read_text();program=(out/'elf-program-headers.txt'
 assert 'AArch64' in header and 'DYN' in header, 'Output is not an ARM64 PIE executable'
 assert '/system/bin/linker64' in program, 'Output does not use the Android64 interpreter'
 sha=lambda path:hashlib.sha256(Path(path).read_bytes()).hexdigest()
-original=Path(os.environ['BLOCKNET_BUILD_ORIGINAL'])
 patch=out/'applied.patch'
 versions={name:subprocess.check_output(command,text=True).strip() for name,command in {'go':['go','version'],'rustc':['rustc','--version'],'cargo':['cargo','--version']}.items()}
-provenance={'experimental':True,'baseline_repository':'https://github.com/blocknetprivacy/core','baseline_commit':os.environ['BLOCKNET_BUILD_BASELINE'],'baseline_export':'git archive of commit; input working-tree modifications excluded','patch_sha256':sha(patch) if patch.exists() else None,'android_link_shim_sha256':sha(out/'android-cgo-link-flags.patch'),'announcement_scan_patch_sha256':sha(out/'onchain-announcement-scan.patch'),'ndk_revision':'30.0.16248370','android_api':int(os.environ['BLOCKNET_BUILD_API']),'versions':versions,'go_flags':'CGO_ENABLED=1 GOOS=android GOARCH=arm64 GOARM64=v8.0 -mod=readonly -trimpath -buildvcs=false -buildmode=pie -ldflags=-s -w -checklinkname=0','cargo_flags':'--locked --release --target aarch64-linux-android','cargo_lock_sha256':sha(out/'Cargo.lock'),'binary_sha256':sha(binary),'original_binary_sha256':sha(original) if original.is_file() else None,'limitation':'Not a byte-identical recreation: supplied binary used Go1.27.0 and unknown dirty source changes. Announcement scanning requires channel configuration and physical Android acceptance before use.'}
+mobile_patches=['0004-mobile-client-policy.patch','0005-core-wallet-persistence.patch','0006-core-wallet-scan-serialization.patch','0007-core-wallet-send-readiness.patch','0008-core-wallet-send-reorg-activity.patch','0009-core-wallet-notification-overflow.patch'] if (out/'mobile-client-policy.patch').exists() else []
+provenance={'experimental':True,'baseline_repository':'https://github.com/blocknetprivacy/core','baseline_commit':os.environ['BLOCKNET_BUILD_BASELINE'],'baseline_export':'git archive of commit; input working-tree modifications excluded','patch_sha256':sha(patch),'android_link_shim_sha256':sha(out/'android-cgo-link-flags.patch'),'announcement_scan_patch_sha256':sha(out/'onchain-announcement-scan.patch'),'mobile_client_patch_sha256':sha(out/'mobile-client-policy.patch'),'mobile_client_capability':1,'wallet_persistence_patch_sha256':sha(out/mobile_patches[1]),'wallet_scan_patch_sha256':sha(out/mobile_patches[2]),'wallet_send_readiness_patch_sha256':sha(out/mobile_patches[3]),'wallet_followup_patch_sha256':sha(out/mobile_patches[4]),'wallet_notification_overflow_patch_sha256':sha(out/mobile_patches[5]),'patch_order':['0001-locked-wallet-activity.patch','0002-android-cgo-link-flags.patch','0003-onchain-announcement-scan.patch']+mobile_patches,'ndk_revision':'30.0.16248370','android_api':int(os.environ['BLOCKNET_BUILD_API']),'versions':versions,'go_flags':'CGO_ENABLED=1 GOOS=android GOARCH=arm64 GOARM64=v8.0 -mod=readonly -trimpath -buildvcs=false -buildmode=pie -ldflags=-s -w -checklinkname=0','cargo_flags':'--locked --release --target aarch64-linux-android','cargo_lock_sha256':sha(out/'Cargo.lock'),'binary_sha256':sha(binary),'limitation':'Pinned upstream Core plus ordered reviewed mobile patches; physical battery savings and funded-wallet migration remain unmeasured.'}
 (out/'build-provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
 (out/'go-buildinfo.txt').write_text(subprocess.check_output(['go','version','-m',str(binary)],text=True))
 (out/'SHA256SUMS').write_text(provenance['binary_sha256']+'  '+binary.name+'\n')
 print('Experimental ARM64 source build complete: '+str(binary))
-print('Supplied binaries and APK configuration were not modified. Review build-provenance.json before acceptance testing.')
+print('Review build-provenance.json and the packaged APK before release.')
 PY

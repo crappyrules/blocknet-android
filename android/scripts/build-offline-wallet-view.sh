@@ -33,6 +33,6 @@ record={'baseline_commit':sys.argv[2],
         'binary_sha256':sha(binary),
         'go_version':subprocess.check_output(['go','version'],text=True).strip(),
         'scope':'Read-only existing-wallet display; no daemon, network, key export or broadcast',
-        'limitation':'Pinned Core source may differ from dirty supplied Core binary; physical wallet compatibility requires acceptance testing.'}
+        'limitation':'This reader uses pinned Core source; funded-wallet migration and unsupported wallet formats require separate acceptance.'}
 (out/'build-provenance.json').write_text(json.dumps(record,indent=2)+'\n')
 PY

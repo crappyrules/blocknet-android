@@ -1,0 +1,325 @@
+From 8e7243dcf803f608a85932f6842aca03f3852a75 Mon Sep 17 00:00:00 2001
+From: Codex Review <codex-review@example.invalid>
+Date: Sat, 17 Oct 2026 18:55:01 -0400
+Subject: [PATCH] Retain newest wallet block wakeups across queue overflow
+
+---
+ cli.go                               |  13 +-
+ daemon.go                            |  47 ++++++-
+ wallet_notification_overflow_test.go | 178 +++++++++++++++++++++++++++
+ wallet_scan_serial_test.go           |   4 +-
+ 4 files changed, 234 insertions(+), 8 deletions(-)
+ create mode 100644 wallet_notification_overflow_test.go
+
+diff --git a/cli.go b/cli.go
+index eb8cfd7..86192d7 100644
+--- a/cli.go
++++ b/cli.go
+@@ -357,8 +357,8 @@ func formatAmount(atomicUnits uint64) string {
+ 
+ // autoScanBlocks subscribes to new blocks and scans them for wallet outputs
+ func (c *CLI) autoScanBlocks() {
+-	blockCh := c.daemon.SubscribeBlocks()
+-	defer c.daemon.UnsubscribeBlocks(blockCh)
++	blockCh := c.daemon.SubscribeWalletBlocks()
++	defer c.daemon.UnsubscribeWalletBlocks(blockCh)
+ 	const saveBatchSize = 50
+ 	unsaved := 0
+ 	var pendingWallet *wallet.Wallet
+@@ -420,7 +420,14 @@ func (c *CLI) autoScanBlocks() {
+ 				doSave()
+ 			}
+ 
+-			applyBlockToWallet(c.daemon.Chain(), w, scanner, block)
++			chain := c.daemon.Chain()
++			applyBlockToWallet(chain, w, scanner, block)
++			// A delayed older notification can arrive after the newest one.
++			// Finish at the current canonical tip before waiting for another
++			// event, including when that newest notification was coalesced.
++			if _, _, ready := walletScanTip(chain, w); !ready {
++				reconcileWalletReorg(chain, w, scanner)
++			}
+ 			w.ReconcileUnconfirmedSpends(func(txID [32]byte) bool {
+ 				return c.daemon.Mempool().HasTransaction(txID)
+ 			})
+diff --git a/daemon.go b/daemon.go
+index 837be86..31c1bc7 100644
+--- a/daemon.go
++++ b/daemon.go
+@@ -48,9 +48,11 @@ type Daemon struct {
+ 	// Identity
+ 	stealthKeys *StealthKeys
+ 
+-	// Block notifications for wallet auto-sync
+-	blockSubs   []chan *Block
+-	blockSubsMu sync.Mutex
++	// General block streams can omit events for slow subscribers. The wallet
++	// stream retains the newest event so its gap/reorg path can catch up.
++	blockSubs       []chan *Block
++	walletBlockSubs []chan *Block
++	blockSubsMu     sync.Mutex
+ 
+ 	// Mined block notifications (blocks we mined)
+ 	minedSubs   []chan *Block
+@@ -497,6 +499,31 @@ func (d *Daemon) SubscribeBlocks() chan *Block {
+ 	return ch
+ }
+ 
++// SubscribeWalletBlocks delivers ordered notifications while there is room.
++// On overflow the oldest pending notification is replaced by the newest;
++// wallet scanning detects the resulting height gap and reads canonical blocks.
++func (d *Daemon) SubscribeWalletBlocks() chan *Block {
++	d.blockSubsMu.Lock()
++	defer d.blockSubsMu.Unlock()
++	ch := make(chan *Block, 10)
++	d.walletBlockSubs = append(d.walletBlockSubs, ch)
++	return ch
++}
++
++func (d *Daemon) UnsubscribeWalletBlocks(ch chan *Block) {
++	if ch == nil {
++		return
++	}
++	d.blockSubsMu.Lock()
++	defer d.blockSubsMu.Unlock()
++	for i, sub := range d.walletBlockSubs {
++		if sub == ch {
++			d.walletBlockSubs = append(d.walletBlockSubs[:i], d.walletBlockSubs[i+1:]...)
++			return
++		}
++	}
++}
++
+ // UnsubscribeBlocks removes a previously subscribed block channel.
+ func (d *Daemon) UnsubscribeBlocks(ch chan *Block) {
+ 	if ch == nil {
+@@ -522,6 +549,20 @@ func (d *Daemon) notifyBlock(block *Block) {
+ 		default: // Don't block if subscriber is slow
+ 		}
+ 	}
++	for _, ch := range d.walletBlockSubs {
++		select {
++		case ch <- block:
++		default:
++			// Delivery is serialized by blockSubsMu. Draining one oldest
++			// pending item leaves room for this newer event; the wallet
++			// reconciles any resulting gap against the canonical chain.
++			select {
++			case <-ch:
++			default: // the receiver drained it concurrently
++			}
++			ch <- block
++		}
++	}
+ }
+ 
+ // SubscribeMinedBlocks returns a channel that receives blocks we mined
+diff --git a/wallet_notification_overflow_test.go b/wallet_notification_overflow_test.go
+new file mode 100644
+index 0000000..eb1739b
+--- /dev/null
++++ b/wallet_notification_overflow_test.go
+@@ -0,0 +1,178 @@
++package main
++
++import (
++	"context"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"blocknet/wallet"
++)
++
++func TestWalletBlockQueueRetainsNewestInOrder(t *testing.T) {
++	d := &Daemon{}
++	ch := d.SubscribeWalletBlocks()
++	defer d.UnsubscribeWalletBlocks(ch)
++	for h := uint64(1); h <= 11; h++ {
++		d.notifyBlock(&Block{Header: BlockHeader{Height: h}})
++	}
++	if len(ch) != 10 {
++		t.Fatalf("queue length %d, want 10", len(ch))
++	}
++	for want := uint64(2); want <= 11; want++ {
++		if got := (<-ch).Header.Height; got != want {
++			t.Fatalf("notification order: got height %d, want %d", got, want)
++		}
++	}
++}
++
++func TestWalletAutoScanRecoversDroppedCanonicalBurst(t *testing.T) {
++	chain, storage, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	genesis := chain.GetBlockByHeight(0)
++	blocks := make([]*Block, 0, 12)
++	prev := genesis.Hash()
++	for h := uint64(1); h <= 12; h++ {
++		block := &Block{Header: BlockHeader{Version: 1, Height: h, PrevHash: prev,
++			Timestamp: genesis.Header.Timestamp + int64(h)*BlockIntervalSec, Difficulty: MinDifficulty}}
++		if err := storage.CommitBlock(&BlockCommit{Block: block, Height: h, Hash: block.Hash(), Work: h + 1, IsMainTip: true}); err != nil {
++			t.Fatal(err)
++		}
++		blocks = append(blocks, block)
++		prev = block.Hash()
++	}
++	chain.mu.Lock()
++	chain.height, chain.bestHash = 12, prev
++	chain.publishTipLocked()
++	chain.mu.Unlock()
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	path := filepath.Join(t.TempDir(), "disposable.wallet")
++	w, err := wallet.NewWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	w.SetSyncedTip(0, genesis.Hash())
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	c := &CLI{ctx: ctx, cancel: cancel, daemon: d, wallet: w,
++		scanner: wallet.NewScanner(w, defaultScannerConfig())}
++	c.scanMu.Lock()
++	done := make(chan struct{})
++	go func() { c.autoScanBlocks(); close(done) }()
++	deadline := time.Now().Add(10 * time.Second)
++	var ch chan *Block
++	for ch == nil {
++		d.blockSubsMu.Lock()
++		if len(d.walletBlockSubs) == 1 {
++			ch = d.walletBlockSubs[0]
++		}
++		d.blockSubsMu.Unlock()
++		if time.Now().After(deadline) {
++			c.scanMu.Unlock()
++			t.Fatal("wallet subscriber did not start")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	d.notifyBlock(blocks[0])
++	for len(ch) != 0 { // the scanner has taken block 1 and is waiting on scanMu
++		if time.Now().After(deadline) {
++			c.scanMu.Unlock()
++			t.Fatal("scanner did not take first notification")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	for _, block := range blocks[1:] { // eleven notifications into a ten-slot queue
++		d.notifyBlock(block)
++	}
++	// A delayed notifier can arrive out of height order. Replace the queued
++	// height-12 wake-up with an ordered run ending at 11; live scanning must
++	// still notice the canonical tip after consuming a forward event.
++	for _, block := range blocks[1:11] {
++		d.notifyBlock(block)
++	}
++	if len(ch) != 10 {
++		c.scanMu.Unlock()
++		t.Fatalf("wallet queue has %d pending notifications, want 10", len(ch))
++	}
++	if _, _, ready := walletScanTip(chain, w); ready {
++		c.scanMu.Unlock()
++		t.Fatal("wallet was marked send-ready before queued blocks were scanned")
++	}
++	c.scanMu.Unlock()
++	for w.SyncedHeight() != 12 || w.SyncedHash() != blocks[11].Hash() {
++		if time.Now().After(deadline) {
++			t.Fatalf("wallet stopped at height %d hash %x", w.SyncedHeight(), w.SyncedHash())
++		}
++		time.Sleep(time.Millisecond)
++	}
++	if _, _, ready := walletScanTip(chain, w); !ready {
++		t.Fatal("wallet remained unavailable after overflow recovery")
++	}
++	if got := len(w.AllOutputs()); got != 0 {
++		t.Fatalf("empty canonical chain produced %d wallet outputs", got)
++	}
++	cancel()
++	select {
++	case <-done:
++	case <-time.After(10 * time.Second):
++		t.Fatal("wallet scanner did not stop")
++	}
++	d.blockSubsMu.Lock()
++	remaining := len(d.walletBlockSubs)
++	d.blockSubsMu.Unlock()
++	if remaining != 0 {
++		t.Fatal("wallet block subscription was not removed on shutdown")
++	}
++	reloaded, err := wallet.LoadWallet(path, []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if reloaded.SyncedHeight() != 12 || reloaded.SyncedHash() != blocks[11].Hash() {
++		t.Fatal("overflow recovery did not persist the canonical tip")
++	}
++}
++
++func TestWalletBlockOverflowReorgAndSideBranch(t *testing.T) {
++	chain, storage, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	a, b := makeForkBlocksForWalletTest(t, chain, storage)
++	w, err := wallet.NewWallet(filepath.Join(t.TempDir(), "disposable.wallet"), []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	w.AddOutput(&wallet.OwnedOutput{TxID: [32]byte{9}, OutputIndex: 0, Amount: 7, BlockHeight: 1})
++	w.SetSyncedTip(1, a.Hash())
++	reorgWalletTestChain(t, chain, storage, a, b)
++	if _, _, ready := walletScanTip(chain, w); ready {
++		t.Fatal("orphaned wallet was marked send-ready")
++	}
++	d := &Daemon{}
++	ch := d.SubscribeWalletBlocks()
++	defer d.UnsubscribeWalletBlocks(ch)
++	for i := 0; i < 10; i++ {
++		d.notifyBlock(a)
++	}
++	d.notifyBlock(b)
++	side := &Block{Header: BlockHeader{Version: 1, Height: 1, PrevHash: a.Header.PrevHash,
++		Timestamp: a.Header.Timestamp + 2, Difficulty: MinDifficulty}}
++	d.notifyBlock(side)
++	if len(ch) != 10 {
++		t.Fatal("reorg burst was not bounded to ten notifications")
++	}
++	scanner := wallet.NewScanner(w, defaultScannerConfig())
++	for len(ch) > 0 {
++		applyBlockToWallet(chain, w, scanner, <-ch)
++	}
++	if w.SyncedHeight() != 1 || w.SyncedHash() != b.Hash() {
++		t.Fatal("overflow reorg did not reach the canonical tip")
++	}
++	if got := len(w.AllOutputs()); got != 0 {
++		t.Fatalf("orphaned output survived overflow reorg: %d", got)
++	}
++	if _, _, ready := walletScanTip(chain, w); !ready {
++		t.Fatal("recovered wallet is not send-ready")
++	}
++}
+diff --git a/wallet_scan_serial_test.go b/wallet_scan_serial_test.go
+index 2ae2944..fb5b620 100644
+--- a/wallet_scan_serial_test.go
++++ b/wallet_scan_serial_test.go
+@@ -49,7 +49,7 @@ func TestAutoScanDropsPendingSaveAfterWalletUnload(t *testing.T) {
+ 	deadline := time.Now().Add(5 * time.Second)
+ 	for {
+ 		d.blockSubsMu.Lock()
+-		ready := len(d.blockSubs) > 0
++		ready := len(d.walletBlockSubs) > 0
+ 		d.blockSubsMu.Unlock()
+ 		if ready {
+ 			break
+@@ -234,7 +234,7 @@ func TestCatchUpAndLiveScanSerializeAndReload(t *testing.T) {
+ 	deadline := time.Now().Add(5 * time.Second)
+ 	for {
+ 		d.blockSubsMu.Lock()
+-		ready := len(d.blockSubs) > 0
++		ready := len(d.walletBlockSubs) > 0
+ 		d.blockSubsMu.Unlock()
+ 		if ready {
+ 			break
+-- 
+2.55.0
+

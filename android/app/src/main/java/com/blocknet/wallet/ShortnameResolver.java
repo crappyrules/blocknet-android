@@ -17,13 +17,28 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Fixed-origin, signed Blocknet ID lookup. It never accepts an unsigned resolution. */
 public final class ShortnameResolver {
+    public static final class NotFoundException extends IOException { NotFoundException(){super("Blocknet shortname was not found");} }
     private static final String ORIGIN="https://blocknet.id";
     private static final int MAX_RESPONSE=128*1024;
+    private static final long LOOKUP_DEADLINE_NS=TimeUnit.SECONDS.toNanos(12);
     private static final long KEY_TTL=10*60*1000L;
     private static final Object KEY_LOCK=new Object();
+    private static final AtomicInteger CANCEL_EPOCH=new AtomicInteger();
+    private static final Map<RequestGuard,Network> ACTIVE=new ConcurrentHashMap<>();
+    private static final ScheduledExecutorService DEADLINES=Executors.newSingleThreadScheduledExecutor(task->{
+        Thread thread=new Thread(task,"shortname-deadlines");thread.setDaemon(true);return thread;
+    });
     private static byte[] cachedKey;
     private static long cachedAt;
     private final Context context;
@@ -49,12 +64,22 @@ public final class ShortnameResolver {
             return verifier.verifySignature(signature);
         }catch(RuntimeException invalid){return false;}
     }
-    public Result resolve(String input)throws IOException{
-        String requested=normalize(input);Network network=SyncNetworkPolicy.allowedNetwork(context);
+    static int cancellationEpoch(){return CANCEL_EPOCH.get();}
+    static void requireEpoch(int expected)throws IOException {
+        if(expected!=CANCEL_EPOCH.get())throw new IOException("Shortname lookup was cancelled");
+    }
+    public Result resolve(String input)throws IOException{return resolve(input,cancellationEpoch());}
+    Result resolve(String input,int expectedEpoch)throws IOException{
+        String requested=normalize(input);requireEpoch(expectedEpoch);
+        Network network=SyncNetworkPolicy.allowedNetwork(context);
         if(network==null)throw new IOException(SyncNetworkPolicy.read(context).reason);
+        requireEpoch(expectedEpoch);
+        int epoch=expectedEpoch;long deadline=System.nanoTime()+LOOKUP_DEADLINE_NS;
         try{
-            JSONObject response=new JSONObject(get(network,"/api/v1/resolve/"+requested));
-            Result verified=verifyResponse(requested,response,publicKey(network));
+            JSONObject response=new JSONObject(get(network,"/api/v1/resolve/"+requested,epoch,deadline));
+            Result verified=verifyResponse(requested,response,publicKey(network,epoch,deadline));
+            requireEpoch(epoch);
+            if(System.nanoTime()-deadline>=0)throw new IOException("Shortname lookup timed out");
             requireNetwork(network);
             return verified;
         }catch(IOException failure){throw failure;}
@@ -84,38 +109,71 @@ public final class ShortnameResolver {
     private static long requiredTimestamp(JSONObject object,String name)throws Exception{
         Object value=object.get(name);if(!(value instanceof Integer)&&!(value instanceof Long))throw new IOException("Invalid signed shortname timestamp");return ((Number)value).longValue();
     }
-    private byte[] publicKey(Network network)throws Exception{
+    private byte[] publicKey(Network network,int epoch,long deadline)throws Exception{
         long now=SystemClock.elapsedRealtime();
         synchronized(KEY_LOCK){if(cachedKey!=null&&now>=cachedAt&&now-cachedAt<KEY_TTL)return cachedKey.clone();}
-        JSONObject document=new JSONObject(get(network,"/.well-known/blocknet-id.json"));
+        JSONObject document=new JSONObject(get(network,"/.well-known/blocknet-id.json",epoch,deadline));
         byte[] key;
         try{key=Base64.getDecoder().decode(requiredString(document,"signing_pubkey").trim());}catch(IllegalArgumentException invalid){throw new IOException("Invalid shortname signing key");}
         if(key.length!=32)throw new IOException("Invalid shortname signing key");
         synchronized(KEY_LOCK){cachedKey=key.clone();cachedAt=SystemClock.elapsedRealtime();}
         return key;
     }
+    static final class RequestGuard {
+        private final int epoch;
+        private final long deadline;
+        private final Runnable disconnect;
+        private final AtomicBoolean timedOut=new AtomicBoolean(),cancelled=new AtomicBoolean();
+        private final ScheduledFuture<?> timer;
+        RequestGuard(int epoch,long deadline,Runnable disconnect){
+            this.epoch=epoch;this.deadline=deadline;this.disconnect=disconnect;
+            long remaining=Math.max(0,deadline-System.nanoTime());
+            timer=DEADLINES.schedule(()->cancel(true),remaining,TimeUnit.NANOSECONDS);
+        }
+        void cancel(boolean timeout){if(timeout)timedOut.set(true);else cancelled.set(true);disconnect.run();}
+        void check()throws IOException {
+            if(cancelled.get()||epoch!=CANCEL_EPOCH.get())throw new IOException("Shortname lookup was cancelled");
+            if(timedOut.get()||System.nanoTime()-deadline>=0)throw new IOException("Shortname lookup timed out");
+        }
+        void finish(){timer.cancel(false);ACTIVE.remove(this);}
+    }
+    static void cancelActive(){CANCEL_EPOCH.incrementAndGet();for(RequestGuard guard:ACTIVE.keySet())guard.cancel(false);}
+    static void cancelDisallowed(Context context){
+        Network allowed=SyncNetworkPolicy.allowedNetwork(context);
+        for(Network inUse:ACTIVE.values())if(allowed==null||!allowed.equals(inUse)){cancelActive();return;}
+    }
     private void requireNetwork(Network expected)throws IOException{
         Network allowed=SyncNetworkPolicy.allowedNetwork(context);
         if(allowed==null||!expected.equals(allowed))throw new IOException("The permitted connection changed. Try the shortname lookup again.");
     }
-    private String get(Network network,String path)throws IOException{
+    private String get(Network network,String path,int epoch,long deadline)throws IOException{
+        requireEpoch(epoch);
         requireNetwork(network);
         HttpsURLConnection connection=null;
+        RequestGuard guard=null;
         try{
+            requireEpoch(epoch);
             connection=(HttpsURLConnection)network.openConnection(new URL(ORIGIN+path),Proxy.NO_PROXY);
+            HttpsURLConnection active=connection;
+            guard=new RequestGuard(epoch,deadline,active::disconnect);ACTIVE.put(guard,network);
+            guard.check();
             connection.setInstanceFollowRedirects(false);connection.setConnectTimeout(5000);connection.setReadTimeout(5000);
             connection.setRequestMethod("GET");connection.setRequestProperty("Accept","application/json");
             int status=connection.getResponseCode();
-            if(status==404)throw new IOException("Blocknet shortname was not found");
+            guard.check();
+            requireNetwork(network);
+            if(status==404&&path.startsWith("/api/v1/resolve/"))throw new NotFoundException();
             if(status!=200)throw new IOException("Shortname service returned HTTP "+status);
             if(connection.getContentLengthLong()>MAX_RESPONSE)throw new IOException("Shortname response exceeds the size limit");
             ByteArrayOutputStream output=new ByteArrayOutputStream();
             try(InputStream in=connection.getInputStream()){
                 byte[] buffer=new byte[4096];int count;
-                while((count=in.read(buffer))!=-1){if(count>MAX_RESPONSE-output.size())throw new IOException("Shortname response exceeds the size limit");output.write(buffer,0,count);}
+                while((count=in.read(buffer))!=-1){guard.check();requireNetwork(network);if(count>MAX_RESPONSE-output.size())throw new IOException("Shortname response exceeds the size limit");output.write(buffer,0,count);}
             }
+            guard.check();
             requireNetwork(network);
             return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(output.toByteArray())).toString();
-        }finally{if(connection!=null)connection.disconnect();}
+        }catch(IOException failure){if(guard!=null)guard.check();throw failure;}
+        finally{if(guard!=null)guard.finish();if(connection!=null)connection.disconnect();}
     }
 }

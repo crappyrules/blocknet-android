@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Verify the APK's supplied programs, checkpoint provenance and adaptive launcher resources."""
+"""Verify the APK's Core programs, checkpoint provenance and adaptive launcher resources."""
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -13,7 +14,7 @@ from apk_launcher import verify_launcher
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('apk', nargs='?', default='app/build/outputs/apk/debug/app-debug.apk')
-parser.add_argument('--core-activity-dir', help='Explicit absolute experimental Core build directory; never auto-detected')
+parser.add_argument('--core-mobile-dir', required=True, help='Absolute reviewed mobile Core build directory')
 parser.add_argument('--offline-wallet-view-dir', required=True, help='Absolute pinned offline wallet reader build directory')
 parser.add_argument('--aapt2', help='Path to Android SDK aapt2 for compiled manifest/resource verification')
 args = parser.parse_args()
@@ -21,11 +22,15 @@ root = Path(__file__).resolve().parents[1]
 apk = Path(args.apk)
 if not apk.is_absolute():
     apk = root / apk
-inputs = root.parent / 'android-test' / 'android-test'
 
 def require(ok, message):
     if not ok:
         raise SystemExit('FAIL: ' + message)
+
+def recorded_go_modules(binary):
+    result = subprocess.check_output(['go', 'version', '-m', str(binary)], text=True)
+    return {(fields[1], fields[2]) for line in result.splitlines()
+            if len(fields := line.split()) >= 3 and fields[0] == 'dep'}
 
 def find_aapt2():
     if args.aapt2:
@@ -47,8 +52,8 @@ def find_aapt2():
 def dump(*arguments):
     return subprocess.check_output([aapt2, 'dump', *arguments], text=True, stderr=subprocess.STDOUT)
 
-def verified_activity_inputs(directory):
-    require(directory.is_absolute() and directory.is_dir(), '--core-activity-dir must be an existing absolute build directory')
+def verified_mobile_inputs(directory):
+    require(directory.is_absolute() and directory.is_dir(), '--core-mobile-dir must be an existing absolute build directory')
     provenance_file = directory / 'build-provenance.json'
     binary_file = directory / 'blocknet-core-arm64-android-experimental'
     patches = root / 'core-patches'
@@ -56,6 +61,11 @@ def verified_activity_inputs(directory):
                 directory / 'android-cgo-link-flags.patch', patches / '0001-locked-wallet-activity.patch',
                 patches / '0002-android-cgo-link-flags.patch', patches / '0003-onchain-announcement-scan.patch',
                 directory / 'onchain-announcement-scan.patch']
+    required += [patches / '0004-mobile-client-policy.patch', directory / 'mobile-client-policy.patch']
+    for name in ('0005-core-wallet-persistence.patch', '0006-core-wallet-scan-serialization.patch',
+                 '0007-core-wallet-send-readiness.patch', '0008-core-wallet-send-reorg-activity.patch',
+                 '0009-core-wallet-notification-overflow.patch'):
+        required += [patches / name, directory / name]
     require(all(path.is_file() for path in required), 'Experimental Core build is missing its binary, provenance, lockfile or reviewed patch copies')
     provenance_bytes = provenance_file.read_bytes()
     try:
@@ -68,11 +78,16 @@ def verified_activity_inputs(directory):
             provenance.get('baseline_commit') == '5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e',
             'Experimental Core provenance identifies an unreviewed baseline')
     expected = {'binary_sha256': binary_file,
-                'original_binary_sha256': inputs / 'blocknet-core-arm64-android',
                 'patch_sha256': patches / '0001-locked-wallet-activity.patch',
                 'android_link_shim_sha256': patches / '0002-android-cgo-link-flags.patch',
                 'announcement_scan_patch_sha256': patches / '0003-onchain-announcement-scan.patch',
                 'cargo_lock_sha256': root / 'core-patches/core-activity.Cargo.lock'}
+    expected.update({'mobile_client_patch_sha256': patches / '0004-mobile-client-policy.patch',
+                     'wallet_persistence_patch_sha256': patches / '0005-core-wallet-persistence.patch',
+                     'wallet_scan_patch_sha256': patches / '0006-core-wallet-scan-serialization.patch',
+                     'wallet_send_readiness_patch_sha256': patches / '0007-core-wallet-send-readiness.patch',
+                     'wallet_followup_patch_sha256': patches / '0008-core-wallet-send-reorg-activity.patch',
+                     'wallet_notification_overflow_patch_sha256': patches / '0009-core-wallet-notification-overflow.patch'})
     for key, path in expected.items():
         recorded = provenance.get(key)
         require(isinstance(recorded, str) and re.fullmatch('[0-9a-f]{64}', recorded) is not None and
@@ -82,9 +97,20 @@ def verified_activity_inputs(directory):
             hashlib.sha256((directory / 'android-cgo-link-flags.patch').read_bytes()).hexdigest() == provenance['android_link_shim_sha256'] and
             hashlib.sha256((directory / 'onchain-announcement-scan.patch').read_bytes()).hexdigest() == provenance['announcement_scan_patch_sha256'],
             'Experimental build patch copies differ from the reviewed source patches')
+    require(provenance.get('mobile_client_capability') == 1 and
+                provenance.get('patch_order') == ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', '0005-core-wallet-persistence.patch', '0006-core-wallet-scan-serialization.patch', '0007-core-wallet-send-readiness.patch', '0008-core-wallet-send-reorg-activity.patch', '0009-core-wallet-notification-overflow.patch'] and
+                hashlib.sha256((directory / 'mobile-client-policy.patch').read_bytes()).hexdigest() == provenance['mobile_client_patch_sha256'] and
+                all(hashlib.sha256((directory / name).read_bytes()).hexdigest() == provenance[field]
+                    for name, field in [('0005-core-wallet-persistence.patch', 'wallet_persistence_patch_sha256'),
+                                        ('0006-core-wallet-scan-serialization.patch', 'wallet_scan_patch_sha256'),
+                                        ('0007-core-wallet-send-readiness.patch', 'wallet_send_readiness_patch_sha256'),
+                                        ('0008-core-wallet-send-reorg-activity.patch', 'wallet_followup_patch_sha256'),
+                                        ('0009-core-wallet-notification-overflow.patch', 'wallet_notification_overflow_patch_sha256')]),
+            'Mobile Core capability or ordered patch provenance is invalid')
     return binary_file.read_bytes(), provenance_bytes
 
-activity_inputs = verified_activity_inputs(Path(args.core_activity_dir)) if args.core_activity_dir is not None else None
+selected_dir = Path(args.core_mobile_dir)
+mobile_inputs = verified_mobile_inputs(selected_dir)
 view_dir = Path(args.offline_wallet_view_dir)
 require(view_dir.is_absolute() and view_dir.is_dir(), '--offline-wallet-view-dir must be an existing absolute build directory')
 view_binary = view_dir / 'blocknet-wallet-view-arm64-android'
@@ -96,21 +122,19 @@ require(view_record.get('baseline_commit') == '5a37ed52f0426951eaac2f0ae86bf0bb6
         view_record.get('helper_source_sha256') == hashlib.sha256((root / 'offline-wallet-view/main.go').read_bytes()).hexdigest() and
         view_record.get('helper_test_sha256') == hashlib.sha256((root / 'offline-wallet-view/main_test.go').read_bytes()).hexdigest(),
         'Offline wallet reader provenance does not match the pinned build')
-activity_asset = 'assets/core-activity-build-provenance.json'
+activity_asset = 'assets/core-mobile-build-provenance.json'
 with zipfile.ZipFile(apk) as archive:
     archive_names = set(archive.namelist())
-    mantle = archive.read('lib/arm64-v8a/libmantle.so')
-    require(mantle == (inputs / 'blocknet').read_bytes(), 'Mantle differs from the unchanged supplied executable')
-    print(f'PASS libmantle.so: {len(mantle):,} bytes SHA-256 {hashlib.sha256(mantle).hexdigest()}')
+    require(not any('mantle' in name.lower() for name in archive_names),
+            'APK unexpectedly contains a Mantle executable or asset')
     actual_core = archive.read('lib/arm64-v8a/libblocknet_core.so')
-    expected_core = activity_inputs[0] if activity_inputs else (inputs / 'blocknet-core-arm64-android').read_bytes()
-    require(actual_core == expected_core, 'Core differs from the explicitly selected experimental build' if activity_inputs else 'Core differs from the supplied executable; experimental builds require --core-activity-dir')
-    if activity_inputs:
-        require(activity_asset in archive.namelist(), 'Experimental Core APK is missing build provenance')
-        require(archive.read(activity_asset) == activity_inputs[1], 'Packaged experimental Core provenance differs from the validated build directory')
-        print('PASS experimental activity API Core: reviewed baseline, binary/patch/shim/lockfile hashes and exact packaged build provenance')
-    else:
-        require(activity_asset not in archive.namelist(), 'Default APK unexpectedly contains experimental Core provenance')
+    require(actual_core == mobile_inputs[0], 'Core differs from the explicitly selected mobile build')
+    require(activity_asset in archive.namelist(), 'Mobile Core APK is missing build provenance')
+    require(archive.read(activity_asset) == mobile_inputs[1],
+            'Packaged mobile Core provenance differs from the validated build directory')
+    require('assets/core-activity-build-provenance.json' not in archive.namelist(),
+            'APK contains provenance for a retired Core variant')
+    print('PASS mobile Core: reviewed baseline, binary/patch/shim/lockfile hashes and exact packaged build provenance')
     print(f'PASS libblocknet_core.so: {len(actual_core):,} bytes SHA-256 {hashlib.sha256(actual_core).hexdigest()}')
     actual_view = archive.read('lib/arm64-v8a/libblocknet_walletview.so')
     require(actual_view == view_binary.read_bytes(), 'Offline wallet reader differs from the pinned build')
@@ -122,6 +146,29 @@ with zipfile.ZipFile(apk) as archive:
     require('classes.dex' in archive.namelist(), 'APK contains no application code')
 
     assets = root / 'app/src/main/assets'
+    for asset_name, source in {
+        'blocknet-wallet-LICENSE.txt': root.parent / 'LICENSE',
+        'blocknet-core-LICENSE.txt': assets / 'blocknet-core-LICENSE.txt',
+        'android-library-LICENSES.txt': assets / 'android-library-LICENSES.txt',
+        'zxing-core-3.5.3-NOTICE.txt': assets / 'zxing-core-3.5.3-NOTICE.txt',
+        'third-party-source-notices.txt': assets / 'third-party-source-notices.txt',
+    }.items():
+        require(archive.read('assets/' + asset_name) == source.read_bytes(),
+                f'Packaged license {asset_name} differs from reviewed source')
+    print('PASS packaged Blocknet, Android library, and pinned source dependency notices')
+    notice = archive.read('assets/third-party-source-notices.txt')
+    rows = list(csv.DictReader((root / 'docs/THIRD_PARTY_COMPONENTS.csv').open(newline='', encoding='utf-8')))
+    recorded = {(row['component'], row['version']) for row in rows if row['ecosystem'] == 'Go'}
+    actual = (recorded_go_modules(selected_dir / 'blocknet-core-arm64-android-experimental') |
+              recorded_go_modules(view_binary))
+    require(recorded == actual, 'Go license inventory differs from selected binary build info')
+    require(all((row['component'] + '@' + row['version']).encode() in notice
+                for row in rows if row['ecosystem'] in ('Go', 'Rust')),
+            'A selected source component is missing from the packaged notice collection')
+    require(hashlib.sha256(archive.read('assets/zxing-core-3.5.3-NOTICE.txt')).hexdigest() ==
+            '4db4b60aace29ec6c5c4f13ca9cac1930d3c0c54bcc67dceead0c10771120e66',
+            'ZXing NOTICE differs from the exact upstream 3.5.3 tag')
+    print(f'PASS notice inventory: {len(recorded)} exact Go module versions recorded by selected binaries')
     checkpoint_bytes = archive.read('assets/checkpoints-mainnet.dat')
     provenance_bytes = archive.read('assets/checkpoints-mainnet.provenance.json')
     require(checkpoint_bytes == (assets / 'checkpoints-mainnet.dat').read_bytes(), 'Packaged checkpoints differ from source asset')
@@ -166,4 +213,4 @@ try:
 except ValueError as error:
     require(False, str(error))
 print('PASS adaptive launcher: packaged foreground/monochrome artwork and manifest icon/roundIcon mappings')
-print(f'PASS {apk}: {"explicit experimental activity API" if activity_inputs else "supplied original"} native programs, mainnet checkpoint seed/provenance and launcher resources verified')
+print(f'PASS {apk}: reviewed mobile Core and offline reader, mainnet checkpoint seed/provenance and launcher resources verified')
