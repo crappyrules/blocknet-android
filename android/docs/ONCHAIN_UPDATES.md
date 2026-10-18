@@ -101,10 +101,10 @@ The pinned raw Ed25519 public key is
 `e8697123b28bdc3e24e328313cef084e37dbfe75cfb68b4cc30ed05eb136256e`).
 The separate owner Android release certificate is pinned by DER SHA-256
 `4a307e802e3504f7850c546ab8b38c292211ea5d5c5be3342107edaec1255fff`.
-Default debug builds leave the scanner disabled. A configured activity-Core
+Default debug builds leave the scanner disabled. A configured mobile-Core
 build scans this channel, but cannot display a signed update until one is
 broadcast and its manifest is available. A signed release build fails unless
-the owner provides activity Core, a pinned release certificate, and all five
+the owner provides the reviewed mobile Core, a pinned release certificate, and all five
 channel inputs matching the pinned values: `BLOCKNET_ANNOUNCEMENT_PRIMARY_PUB`,
 `BLOCKNET_ANNOUNCEMENT_VIEW_PRIV` (a deliberately published channel view key,
 never a user's wallet key), `BLOCKNET_ANNOUNCEMENT_SPEND_PUB`,
