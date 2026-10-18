@@ -108,6 +108,7 @@ jobs:
           cp "$RUNNER_TEMP/core-mobile/0007-core-wallet-send-readiness.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
           cp "$RUNNER_TEMP/core-mobile/0008-core-wallet-send-reorg-activity.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
           cp "$RUNNER_TEMP/core-mobile/0009-core-wallet-notification-overflow.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
+          cp "$RUNNER_TEMP/core-mobile/0010-bootstrap-progress.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
           cp "$RUNNER_TEMP/core-mobile/Cargo.lock" "$GITHUB_WORKSPACE/mobile-artifacts/"
           cp "$RUNNER_TEMP/offline-wallet-view/build-provenance.json" "$GITHUB_WORKSPACE/mobile-artifacts/offline-wallet-view-build-provenance.json"
           cd "$GITHUB_WORKSPACE/mobile-artifacts"
@@ -245,7 +246,9 @@ jobs:
 
   publish_release:
     name: Publish owner-signed APK
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_release && inputs.publish_release && inputs.confirm_publish_tag == github.ref_name && startsWith(github.ref, 'refs/tags/v') && github.repository == 'crappyrules/blocknet-android' }}
+    # Preview.6 is a phone-acceptance candidate. Its tag may sign an artifact,
+    # but no workflow dispatch may publish it as a GitHub Release.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_release && inputs.publish_release && inputs.confirm_publish_tag == github.ref_name && startsWith(github.ref, 'refs/tags/v') && github.ref_name != 'v1.0.0-preview.6' && github.repository == 'crappyrules/blocknet-android' }}
     needs: sign_release
     runs-on: ubuntu-24.04
     timeout-minutes: 10

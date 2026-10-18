@@ -81,5 +81,5 @@ final class WalletTheme {
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.topMargin=dp(7);p.bottomMargin=dp(7);v.setLayoutParams(p);return v;
     }
     void section(LinearLayout parent,String label) { TextView v=text("# "+LocalizedText.get(context,label),16,LIME);v.setPadding(0,dp(16),0,dp(12));parent.addView(v); }
-    void line(LinearLayout parent,String label,String value) { LinearLayout r=row();TextView l=text(label,12,MUTED),v=rawText(value,13,TEXT);v.setGravity(Gravity.END);r.addView(l,new LinearLayout.LayoutParams(0,-2,1));r.addView(v,new LinearLayout.LayoutParams(0,-2,1));parent.addView(r); }
+    TextView line(LinearLayout parent,String label,String value) { LinearLayout r=row();TextView l=text(label,12,MUTED),v=rawText(value,13,TEXT);v.setGravity(Gravity.END);r.addView(l,new LinearLayout.LayoutParams(0,-2,1));r.addView(v,new LinearLayout.LayoutParams(0,-2,1));parent.addView(r);return v; }
 }

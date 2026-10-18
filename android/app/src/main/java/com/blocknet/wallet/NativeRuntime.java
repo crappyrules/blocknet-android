@@ -11,6 +11,7 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
+import java.security.SecureRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -27,6 +28,7 @@ public final class NativeRuntime {
     final File root;
     private Process child;
     private long generation;
+    private String bootstrapProofNonce;
     private volatile String message = "Node stopped";
     private volatile boolean starting;
     private volatile boolean syncRequested;
@@ -52,6 +54,7 @@ public final class NativeRuntime {
     File cookie() { return new File(dataDir(), "api.cookie"); }
     File pidFile() { return new File(networkDir(), "core.pid"); }
     File logFile() { return new File(networkDir(), "core.log"); }
+    File bootstrapProofFile() { return new File(dataDir(), "bootstrap-shutdown-proof.json"); }
     File binary(String name) { return new File(context.getApplicationInfo().nativeLibraryDir, name); }
     public int port() { return prefs.getInt("port." + network(), 0); }
     public String message() { return message; }
@@ -100,7 +103,7 @@ public final class NativeRuntime {
     public synchronized void start() throws Exception {
         SyncNetworkPolicy.State connection = SyncNetworkPolicy.read(context);
         if (!connection.allowed) throw new IOException(connection.reason);
-        if (!MobileCorePolicy.permitted(context)) throw new IOException("Node stopped while wallet is in background");
+        if (!MobileCorePolicy.syncPermitted(context)) throw new IOException("Node stopped while wallet is in background");
         if (alive()) { message = "Node running"; return; }
         starting = true;
         message = "Starting local node…";
@@ -144,17 +147,25 @@ public final class NativeRuntime {
             try (ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) { port = socket.getLocalPort(); }
             if (!prefs.edit().putInt("port." + network(), port).commit()) throw new IOException("Could not save node port");
             cookie().delete();
+            if (bootstrapProofFile().exists() && !bootstrapProofFile().delete())
+                throw new IOException("Could not clear prior node shutdown receipt");
+            byte[] proofRandom = new byte[16]; new SecureRandom().nextBytes(proofRandom);
+            StringBuilder proofToken = new StringBuilder();
+            for (byte value : proofRandom) proofToken.append(String.format(Locale.ROOT, "%02x", value & 255));
+            bootstrapProofNonce = proofToken.toString();
             if (logFile().length() > 2 * 1024 * 1024) Files.move(logFile().toPath(), new File(networkDir(), "core.previous.log").toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             List<String> cmd = new ArrayList<>(Arrays.asList("/system/bin/sh", "-c", "echo $$ > \"$BNT_PID_FILE\"; exec \"$@\"", "blocknet-core", binary("libblocknet_core.so").getAbsolutePath(), "--data", dataDir().getAbsolutePath(), "--api", "127.0.0.1:" + port));
             if (network().equals("testnet")) cmd.add("--testnet");
             ProcessBuilder pb = new ProcessBuilder(cmd).directory(networkDir()).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(logFile()));
             setEnvironment(pb);
             if (BuildConfig.CORE_MOBILE_CLIENT) pb.environment().put("BLOCKNET_MOBILE_CLIENT", "1");
+            pb.environment().put("BLOCKNET_BOOTSTRAP_PROOF_PATH", bootstrapProofFile().getAbsolutePath());
+            pb.environment().put("BLOCKNET_BOOTSTRAP_PROOF_NONCE", bootstrapProofNonce);
             pb.environment().put("BNT_PID_FILE", pidFile().getAbsolutePath());
             // Settings/file preparation may take time; do not spawn after a network handover.
             connection = SyncNetworkPolicy.read(context);
             if (!connection.allowed) throw new IOException(connection.reason);
-            if (!MobileCorePolicy.permitted(context)) throw new IOException("Node stopped while wallet is in background");
+            if (!MobileCorePolicy.syncPermitted(context)) throw new IOException("Node stopped while wallet is in background");
             child = pb.start();
             generation++;
             checkpointVerification = null;
@@ -193,6 +204,12 @@ public final class NativeRuntime {
             }
         }
     }
+    synchronized JSONObject shutdownProof() throws Exception {
+        if (alive() || bootstrapProofNonce == null || !bootstrapProofFile().isFile() ||
+            bootstrapProofFile().length() > 1024) return null;
+        JSONObject proof = new JSONObject(new String(Files.readAllBytes(bootstrapProofFile().toPath()), StandardCharsets.UTF_8));
+        return bootstrapProofNonce.equals(proof.optString("nonce")) ? proof : null;
+    }
     public String checkpointWarning() { return checkpointWarning; }
     public synchronized JSONObject verifyCheckpoints() throws Exception {
         if (!network().equals("mainnet")) return new JSONObject();
@@ -210,7 +227,7 @@ public final class NativeRuntime {
     public void refreshCheckpointsInBackground() {
         synchronized (this) {
             long now = android.os.SystemClock.elapsedRealtime();
-            if (!syncRequested || !alive() || !MobileCorePolicy.permitted(context) || !network().equals("mainnet") || (checkpointRefreshAttempt > 0 && now - checkpointRefreshAttempt < 15 * 60 * 1000)) return;
+            if (!syncRequested || !alive() || !MobileCorePolicy.syncPermitted(context) || !network().equals("mainnet") || (checkpointRefreshAttempt > 0 && now - checkpointRefreshAttempt < 15 * 60 * 1000)) return;
             checkpointRefreshAttempt = now;
         }
         try { refreshCheckpoints(); } catch (Exception ignored) { }
@@ -223,7 +240,7 @@ public final class NativeRuntime {
         synchronized (this) {
             SyncNetworkPolicy.State connection = SyncNetworkPolicy.read(context);
             if (!connection.allowed) throw new IOException(connection.reason);
-            if (!MobileCorePolicy.permitted(context)) throw new IOException("Node stopped while wallet is in background");
+            if (!MobileCorePolicy.syncPermitted(context)) throw new IOException("Node stopped while wallet is in background");
             if (!network().equals("mainnet")) throw new IOException("Published checkpoints are for mainnet");
             directory = dataDir(); expectedGeneration = generation;
         }
@@ -232,18 +249,18 @@ public final class NativeRuntime {
         try {
             status = CheckpointManager.refresh(directory, (CheckpointManager.ConnectionFactory) url -> {
                 android.net.Network network = SyncNetworkPolicy.allowedNetwork(context);
-                if (network == null || downloadEpoch != checkpointDownloadEpoch.get() || !MobileCorePolicy.permitted(context)) throw new IOException("Checkpoint refresh cancelled or no permitted network");
+                if (network == null || downloadEpoch != checkpointDownloadEpoch.get() || !MobileCorePolicy.syncPermitted(context)) throw new IOException("Checkpoint refresh cancelled or no permitted network");
                 HttpURLConnection connection = (HttpURLConnection)network.openConnection(url);
                 ownedDownload[0] = connection;
                 checkpointConnection.set(connection);
-                if (!SyncNetworkPolicy.read(context).allowed || !MobileCorePolicy.permitted(context) || downloadEpoch != checkpointDownloadEpoch.get()) {
+                if (!SyncNetworkPolicy.read(context).allowed || !MobileCorePolicy.syncPermitted(context) || downloadEpoch != checkpointDownloadEpoch.get()) {
                     connection.disconnect(); throw new IOException("Sync connection is no longer allowed");
                 }
                 return connection;
             });
         } finally { checkpointConnection.compareAndSet(ownedDownload[0],null); }
         synchronized (this) {
-            if (!network().equals("mainnet") || generation != expectedGeneration || downloadEpoch != checkpointDownloadEpoch.get() || !MobileCorePolicy.permitted(context)) throw new IOException("The node changed while checkpoints were refreshing. Check its current status.");
+            if (!network().equals("mainnet") || generation != expectedGeneration || downloadEpoch != checkpointDownloadEpoch.get() || !MobileCorePolicy.syncPermitted(context)) throw new IOException("The node changed while checkpoints were refreshing. Check its current status.");
             checkpointWarning = checkpointMessage(status);
             checkpointVerification = null; checkpointGeneration = -1;
             JSONObject result;

@@ -77,8 +77,10 @@
     <string name="loc_cancel_19766ed6" formatted="false">Cancel</string>
     <string name="loc_cannot_read_selected_file_6e4f251c" formatted="false">Cannot read selected file</string>
     <string name="loc_cannot_write_to_selected_file_f3b4e592" formatted="false">Cannot write to selected file</string>
+    <string name="loc_chain_caught_up_open_wallet_ba755c34" formatted="false">Chain caught up. Open wallet to finish its scan.</string>
     <string name="loc_chain_height_cf1571b8" formatted="false">Chain height</string>
     <string name="loc_chain_height_1_s_f91f8774">Chain height: %1$s</string>
+    <string name="loc_chain_syncing_open_wallet_to_f8863ce2" formatted="false">Chain syncing · open wallet to finish its scan</string>
     <string name="loc_chain_1_s_2_s_d76cc509">Chain: %1$s / %2$s blocks</string>
     <string name="loc_chain_1_s_blocks_finding_42880734">Chain: %1$s blocks · finding network target</string>
     <string name="loc_change_network_7ef03faf" formatted="false">Change network</string>
@@ -180,6 +182,7 @@
     <string name="loc_ethernet_681e1209" formatted="false">Ethernet</string>
     <string name="loc_export_backup_d6dfd0f0" formatted="false">Export backup</string>
     <string name="loc_export_encrypted_backup_2d2c38e3" formatted="false">Export encrypted backup</string>
+    <string name="loc_first_or_restored_wallet_sync_006905d9" formatted="false">First or restored wallet sync can continue with the screen off until the chain and wallet scan catch up. If Android stops the process, reopen and unlock to resume. After initial sync, leaving the wallet stops Core and background payment alerts. Saved balances remain dated until catch-up. Battery savings have not been measured.</string>
     <string name="loc_first_sync_may_take_time_3799d4d1" formatted="false">First sync may take time. Keep free storage available as the blockchain grows. A 64-bit ARM device running Android 8 or later is required.</string>
     <string name="loc_follow_phone_language_5b74c6f9" formatted="false">Follow phone language</string>
     <string name="loc_free_app_storage_1_s_3a2c94ff">Free app storage: %1$s</string>
@@ -199,6 +202,11 @@
     <string name="loc_incomplete_signed_shortname_response_29059e28" formatted="false">Incomplete signed shortname response</string>
     <string name="loc_incorrect_wallet_password_or_damaged_325f194f" formatted="false">Incorrect wallet password or damaged saved view.</string>
     <string name="loc_incorrect_wallet_password_or_damaged_5b618fe8" formatted="false">Incorrect wallet password or damaged wallet file.</string>
+    <string name="loc_initial_sync_pause_failed_open_a65f038b" formatted="false">Initial sync pause failed. Open wallet to check node status.</string>
+    <string name="loc_initial_sync_state_could_not_a7414556" formatted="false">Initial sync state could not be saved. Open wallet to retry.</string>
+    <string name="loc_initial_wallet_scan_and_chain_71fd4ee1" formatted="false">Initial wallet scan and chain sync continuing</string>
+    <string name="loc_initial_wallet_sync_running_1_9aac90b1">Initial wallet sync running · %1$s</string>
+    <string name="loc_initial_wallet_sync_running_waiting_1d15d108" formatted="false">Initial wallet sync running · waiting for Core</string>
     <string name="loc_interrupted_while_stopping_offline_wallet_0f1c537a" formatted="false">Interrupted while stopping offline wallet reader.</string>
     <string name="loc_invalid_blocknet_address_character_16208696" formatted="false">Invalid Blocknet address character</string>
     <string name="loc_invalid_blocknet_address_checksum_or_fa5f396a" formatted="false">Invalid Blocknet address checksum or network</string>
@@ -310,6 +318,7 @@
     <string name="loc_open_this_wallet_once_to_4c8aaf57" formatted="false">Open this wallet once to establish its activity binding</string>
     <string name="loc_open_transaction_1_s_in_63751732">Open transaction %1$s in Blocknet explorer</string>
     <string name="loc_open_wallet_762a16c9" formatted="false">Open wallet</string>
+    <string name="loc_open_wallet_to_resume_initial_81b10a7c" formatted="false">Open wallet to resume initial sync</string>
     <string name="loc_operation_could_not_be_completed_3721779e" formatted="false">Operation could not be completed. Please try again.</string>
     <string name="loc_optional_shortname_5a472648" formatted="false">Optional $shortname</string>
     <string name="loc_optional_shortname_for_full_address_e207e4ae" formatted="false">Optional $shortname for full address</string>
@@ -439,7 +448,6 @@
     <string name="loc_stop_node_when_wallet_leaves_02e52a0e" formatted="false">Stop node when wallet leaves foreground</string>
     <string name="loc_stop_sync_b7379b6e" formatted="false">Stop sync</string>
     <string name="loc_stopping_node_for_the_sync_c60b8e29" formatted="false">Stopping node for the sync network preference…</string>
-    <string name="loc_stops_core_and_background_payment_5480090f" formatted="false">Stops Core and background payment alerts. Reopening the wallet restarts Core and scans from saved state; large chains can make each restart slow. Saved balances remain dated until catch-up. Battery savings have not been measured.</string>
     <string name="loc_strong_biometric_unlock_is_available_da662b41" formatted="false">Strong biometric unlock is available.</string>
     <string name="loc_strong_biometric_unlock_is_unavailable_8b29bf2c" formatted="false">Strong biometric unlock is unavailable. Use your wallet password.</string>
     <string name="loc_switch_add_wallet_a5bc7e58" formatted="false">Switch / add wallet</string>
@@ -568,6 +576,7 @@
     <string name="loc_wallet_height_0f27fcd6" formatted="false">Wallet height</string>
     <string name="loc_wallet_last_scanned_height_1_f2ec4f3f">Wallet last scanned height: %1$s · chain height unavailable offline</string>
     <string name="loc_wallet_list_1a7090ad" formatted="false">Wallet list</string>
+    <string name="loc_wallet_lock_failed_open_wallet_bcd753cf" formatted="false">Wallet lock failed. Open wallet to resume sync.</string>
     <string name="loc_wallet_name_ff5cf34a" formatted="false">Wallet name</string>
     <string name="loc_wallet_name_1_48_letters_65dd59bf" formatted="false">Wallet name: 1–48 letters, numbers, dashes or underscores</string>
     <string name="loc_wallet_network_changed_check_the_bdf49a31" formatted="false">Wallet network changed. Check the recipient again.</string>

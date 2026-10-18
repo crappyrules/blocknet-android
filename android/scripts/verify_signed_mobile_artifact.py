@@ -17,6 +17,7 @@ PATCHES = (
     ('0007-core-wallet-send-readiness.patch', 'wallet_send_readiness_patch_sha256'),
     ('0008-core-wallet-send-reorg-activity.patch', 'wallet_followup_patch_sha256'),
     ('0009-core-wallet-notification-overflow.patch', 'wallet_notification_overflow_patch_sha256'),
+    ('0010-bootstrap-progress.patch', 'bootstrap_progress_patch_sha256'),
 )
 BASELINE = '5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e'
 

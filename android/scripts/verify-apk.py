@@ -64,7 +64,7 @@ def verified_mobile_inputs(directory):
     required += [patches / '0004-mobile-client-policy.patch', directory / 'mobile-client-policy.patch']
     for name in ('0005-core-wallet-persistence.patch', '0006-core-wallet-scan-serialization.patch',
                  '0007-core-wallet-send-readiness.patch', '0008-core-wallet-send-reorg-activity.patch',
-                 '0009-core-wallet-notification-overflow.patch'):
+                 '0009-core-wallet-notification-overflow.patch', '0010-bootstrap-progress.patch'):
         required += [patches / name, directory / name]
     require(all(path.is_file() for path in required), 'Experimental Core build is missing its binary, provenance, lockfile or reviewed patch copies')
     provenance_bytes = provenance_file.read_bytes()
@@ -87,7 +87,8 @@ def verified_mobile_inputs(directory):
                      'wallet_scan_patch_sha256': patches / '0006-core-wallet-scan-serialization.patch',
                      'wallet_send_readiness_patch_sha256': patches / '0007-core-wallet-send-readiness.patch',
                      'wallet_followup_patch_sha256': patches / '0008-core-wallet-send-reorg-activity.patch',
-                     'wallet_notification_overflow_patch_sha256': patches / '0009-core-wallet-notification-overflow.patch'})
+                     'wallet_notification_overflow_patch_sha256': patches / '0009-core-wallet-notification-overflow.patch',
+                     'bootstrap_progress_patch_sha256': patches / '0010-bootstrap-progress.patch'})
     for key, path in expected.items():
         recorded = provenance.get(key)
         require(isinstance(recorded, str) and re.fullmatch('[0-9a-f]{64}', recorded) is not None and
@@ -98,14 +99,15 @@ def verified_mobile_inputs(directory):
             hashlib.sha256((directory / 'onchain-announcement-scan.patch').read_bytes()).hexdigest() == provenance['announcement_scan_patch_sha256'],
             'Experimental build patch copies differ from the reviewed source patches')
     require(provenance.get('mobile_client_capability') == 1 and
-                provenance.get('patch_order') == ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', '0005-core-wallet-persistence.patch', '0006-core-wallet-scan-serialization.patch', '0007-core-wallet-send-readiness.patch', '0008-core-wallet-send-reorg-activity.patch', '0009-core-wallet-notification-overflow.patch'] and
+                provenance.get('patch_order') == ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', '0005-core-wallet-persistence.patch', '0006-core-wallet-scan-serialization.patch', '0007-core-wallet-send-readiness.patch', '0008-core-wallet-send-reorg-activity.patch', '0009-core-wallet-notification-overflow.patch', '0010-bootstrap-progress.patch'] and
                 hashlib.sha256((directory / 'mobile-client-policy.patch').read_bytes()).hexdigest() == provenance['mobile_client_patch_sha256'] and
                 all(hashlib.sha256((directory / name).read_bytes()).hexdigest() == provenance[field]
                     for name, field in [('0005-core-wallet-persistence.patch', 'wallet_persistence_patch_sha256'),
                                         ('0006-core-wallet-scan-serialization.patch', 'wallet_scan_patch_sha256'),
                                         ('0007-core-wallet-send-readiness.patch', 'wallet_send_readiness_patch_sha256'),
                                         ('0008-core-wallet-send-reorg-activity.patch', 'wallet_followup_patch_sha256'),
-                                        ('0009-core-wallet-notification-overflow.patch', 'wallet_notification_overflow_patch_sha256')]),
+                                        ('0009-core-wallet-notification-overflow.patch', 'wallet_notification_overflow_patch_sha256'),
+                                        ('0010-bootstrap-progress.patch', 'bootstrap_progress_patch_sha256')]),
             'Mobile Core capability or ordered patch provenance is invalid')
     return binary_file.read_bytes(), provenance_bytes
 

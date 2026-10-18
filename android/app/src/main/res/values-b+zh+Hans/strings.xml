@@ -76,8 +76,10 @@
     <string name="loc_cancel_19766ed6" formatted="false">取消</string>
     <string name="loc_cannot_read_selected_file_6e4f251c" formatted="false">无法读取所选文件</string>
     <string name="loc_cannot_write_to_selected_file_f3b4e592" formatted="false">无法写入所选文件</string>
+    <string name="loc_chain_caught_up_open_wallet_ba755c34" formatted="false">区块链已追上。打开钱包以完成扫描。</string>
     <string name="loc_chain_height_cf1571b8" formatted="false">区块高度</string>
     <string name="loc_chain_height_1_s_f91f8774">区块高度：%1$s</string>
+    <string name="loc_chain_syncing_open_wallet_to_f8863ce2" formatted="false">区块链正在同步 · 打开钱包以完成扫描</string>
     <string name="loc_chain_1_s_2_s_d76cc509">区块高度：%1$s / %2$s 个区块</string>
     <string name="loc_chain_1_s_blocks_finding_42880734">区块高度：%1$s 个区块 · 正在查找网络目标</string>
     <string name="loc_change_network_7ef03faf" formatted="false">切换网络</string>
@@ -179,6 +181,7 @@
     <string name="loc_ethernet_681e1209" formatted="false">以太网</string>
     <string name="loc_export_backup_d6dfd0f0" formatted="false">导出备份</string>
     <string name="loc_export_encrypted_backup_2d2c38e3" formatted="false">导出加密备份</string>
+    <string name="loc_first_or_restored_wallet_sync_006905d9" formatted="false">首次创建或恢复的钱包可在熄屏后继续同步，直到区块链和钱包扫描都追上。若 Android 停止进程，请重新打开并解锁钱包以继续。首次同步完成后，离开钱包会停止核心程序和后台收款提醒。追上链上状态前，已保存余额仍显示保存时间。节电效果尚未测量。</string>
     <string name="loc_first_sync_may_take_time_3799d4d1" formatted="false">首次同步可能需要较长时间。区块链增长时请留出存储空间。需要运行 Android 8 或更高版本的 64 位 ARM 设备。</string>
     <string name="loc_follow_phone_language_5b74c6f9" formatted="false">跟随手机语言</string>
     <string name="loc_free_app_storage_1_s_3a2c94ff">应用可用存储空间：%1$s</string>
@@ -198,6 +201,11 @@
     <string name="loc_incomplete_signed_shortname_response_29059e28" formatted="false">已签名短名响应不完整</string>
     <string name="loc_incorrect_wallet_password_or_damaged_325f194f" formatted="false">钱包密码错误，或已保存的视图已损坏。</string>
     <string name="loc_incorrect_wallet_password_or_damaged_5b618fe8" formatted="false">钱包密码错误，或钱包文件已损坏。</string>
+    <string name="loc_initial_sync_pause_failed_open_a65f038b" formatted="false">首次同步暂停失败。打开钱包查看节点状态。</string>
+    <string name="loc_initial_sync_state_could_not_a7414556" formatted="false">无法保存首次同步状态。打开钱包重试。</string>
+    <string name="loc_initial_wallet_scan_and_chain_71fd4ee1" formatted="false">首次钱包扫描和区块链同步仍在继续</string>
+    <string name="loc_initial_wallet_sync_running_1_9aac90b1">首次钱包同步正在运行 · %1$s</string>
+    <string name="loc_initial_wallet_sync_running_waiting_1d15d108" formatted="false">首次钱包同步正在运行 · 等待核心程序</string>
     <string name="loc_interrupted_while_stopping_offline_wallet_0f1c537a" formatted="false">停止离线钱包读取程序时被中断。</string>
     <string name="loc_invalid_blocknet_address_character_16208696" formatted="false">Blocknet 地址包含无效字符</string>
     <string name="loc_invalid_blocknet_address_checksum_or_fa5f396a" formatted="false">Blocknet 地址校验和或网络不匹配</string>
@@ -309,6 +317,7 @@
     <string name="loc_open_this_wallet_once_to_4c8aaf57" formatted="false">请先打开此钱包一次，以建立交易记录绑定</string>
     <string name="loc_open_transaction_1_s_in_63751732">在 Blocknet 浏览器中打开交易 %1$s</string>
     <string name="loc_open_wallet_762a16c9" formatted="false">打开钱包</string>
+    <string name="loc_open_wallet_to_resume_initial_81b10a7c" formatted="false">打开钱包以继续首次同步</string>
     <string name="loc_operation_could_not_be_completed_3721779e" formatted="false">操作未能完成，请重试。</string>
     <string name="loc_optional_shortname_5a472648" formatted="false">$短名（可选）</string>
     <string name="loc_optional_shortname_for_full_address_e207e4ae" formatted="false">完整地址对应的 $短名（可选）</string>
@@ -438,7 +447,6 @@
     <string name="loc_stop_node_when_wallet_leaves_02e52a0e" formatted="false">钱包切到后台时停止节点</string>
     <string name="loc_stop_sync_b7379b6e" formatted="false">停止同步</string>
     <string name="loc_stopping_node_for_the_sync_c60b8e29" formatted="false">正在根据同步网络设置停止节点…</string>
-    <string name="loc_stops_core_and_background_payment_5480090f" formatted="false">停止核心程序和后台收款提醒。重新打开钱包时，核心程序会重启并从已保存状态继续扫描；区块链较大时，每次重启可能较慢。追上链上状态前，已保存余额仍显示保存时间。节电效果尚未测量。</string>
     <string name="loc_strong_biometric_unlock_is_available_da662b41" formatted="false">可使用强生物识别解锁。</string>
     <string name="loc_strong_biometric_unlock_is_unavailable_8b29bf2c" formatted="false">强生物识别解锁不可用。请使用钱包密码。</string>
     <string name="loc_switch_add_wallet_a5bc7e58" formatted="false">切换 / 添加钱包</string>
@@ -567,6 +575,7 @@
     <string name="loc_wallet_height_0f27fcd6" formatted="false">钱包高度</string>
     <string name="loc_wallet_last_scanned_height_1_f2ec4f3f">钱包上次扫描高度：%1$s · 离线时无法获取当前区块高度</string>
     <string name="loc_wallet_list_1a7090ad" formatted="false">钱包列表</string>
+    <string name="loc_wallet_lock_failed_open_wallet_bcd753cf" formatted="false">钱包锁定失败。打开钱包以继续同步。</string>
     <string name="loc_wallet_name_ff5cf34a" formatted="false">钱包名称</string>
     <string name="loc_wallet_name_1_48_letters_65dd59bf" formatted="false">钱包名称须为 1 至 48 个英文字母、数字、连字符或下划线</string>
     <string name="loc_wallet_network_changed_check_the_bdf49a31" formatted="false">钱包网络已变化。请重新检查收款人。</string>

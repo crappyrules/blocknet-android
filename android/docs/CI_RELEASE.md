@@ -38,11 +38,16 @@ private key or channel spend private key is used by Actions.
    those protection rules in Settings too. The publish job receives no owner
    signing secret. The workflow name `android-publish` alone does not create
    protection: GitHub can create an unprotected environment automatically.
-4. After phone acceptance and review of the release notes' remaining limits, create and
-   review the release tag. Run the workflow manually at that tag with
-   `sign_release=true` and `publish_release=false` first. Verify the downloaded
-   signed artifact, its signer certificate and checksum. This is a rehearsal.
-   For actual publication, start a **new** run at the reviewed tag with
+4. For the preview.6 phone-acceptance candidate, review and tag the exact
+   source commit, then run the workflow at that tag with `sign_release=true`
+   and `publish_release=false`. The tag is public, but this run only uploads a
+   protected Actions artifact; it creates no GitHub Release or on-chain notice.
+   The tagged workflow explicitly refuses to publish preview.6. Verify the
+   downloaded signed artifact, its signer certificate and checksum before an
+   in-place installation on a restored test wallet.
+5. After phone acceptance and review of the remaining limits, advance to a
+   newly reviewed release tag and notes. For actual publication, start a
+   **new** run at that tag with
    `sign_release=true`, `publish_release=true`, and `confirm_publish_tag`
    exactly equal to the selected tag. Approve `android-release`, then inspect
    the signed APK and `SHA256SUMS` from **that same run** before approving
