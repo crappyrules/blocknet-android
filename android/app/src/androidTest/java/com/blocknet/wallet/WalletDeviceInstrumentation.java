@@ -39,7 +39,9 @@ public final class WalletDeviceInstrumentation extends Instrumentation {
     @Override public void onStart(){
         if(arguments!=null&&"true".equals(arguments.getString("safe-stop-only"))){safeStopOnly();return;}
         if(arguments!=null&&"true".equals(arguments.getString("language-ui-only"))){languageUiOnly();return;}
+        if(arguments!=null&&"true".equals(arguments.getString("language-locale-only"))){languageLocaleOnly();return;}
         if(arguments!=null&&"true".equals(arguments.getString("language-return-only"))){languageReturnOnly();return;}
+        if(arguments!=null&&"true".equals(arguments.getString("language-loaded-wallet-only"))){languageLoadedWalletOnly();return;}
         if(arguments!=null&&"true".equals(arguments.getString("language-restore-english"))){languageRestoreEnglish();return;}
         if(arguments!=null&&"true".equals(arguments.getString("language-persisted-only"))){languagePersistedOnly();return;}
         if(arguments!=null&&"true".equals(arguments.getString("foreground-policy-only"))){foregroundPolicyOnly();return;}
@@ -307,6 +309,40 @@ public final class WalletDeviceInstrumentation extends Instrumentation {
             +", Simplified Chinese="+(visibleText("Simplified Chinese")!=null)
             +", 简体中文="+(visibleText("简体中文")!=null)+", Cancel="+(visibleText("Cancel")!=null);
     }
+    /** Exercises Android locale persistence without opening a wallet or a screen. */
+    private void languageLocaleOnly(){
+        Bundle result=new Bundle();android.content.Context context=getTargetContext();
+        NativeRuntime runtime=NativeRuntime.get(context);String original=AppLanguage.choice(context);
+        try {
+            check("com.blocknet.wallet.offlinetest".equals(context.getPackageName()),
+                "Locale sequence targets only OFFLINETEST");
+            check(!runtime.alive()&&!MobileCorePolicy.requested(context),
+                "Locale sequence has no active Core or saved sync request");
+            int cancel=GeneratedTranslations.EXACT.get("Cancel");
+            check(AppLanguage.set(context,AppLanguage.ENGLISH)
+                &&AppLanguage.ENGLISH.equals(AppLanguage.choice(context))
+                &&"Cancel".equals(AppLanguage.wrap(context).getString(cancel)),
+                "English app locale and resources apply");
+            check(AppLanguage.set(context,AppLanguage.CHINESE)
+                &&AppLanguage.CHINESE.equals(AppLanguage.choice(context))
+                &&"取消".equals(AppLanguage.wrap(context).getString(cancel)),
+                "Chinese app locale and resources apply");
+            check(AppLanguage.set(context,AppLanguage.ENGLISH)
+                &&AppLanguage.ENGLISH.equals(AppLanguage.choice(context))
+                &&"Cancel".equals(AppLanguage.wrap(context).getString(cancel)),
+                "English returns after Chinese");
+            result.putString("stream","OK (isolated English-Chinese-English LocaleManager sequence).\n");
+        } catch(Throwable failure) {
+            result.putString("stream","FAIL isolated locale sequence ("+failure.getClass().getSimpleName()+").\n");
+        } finally {
+            try {if(!AppLanguage.set(context,original)||!original.equals(AppLanguage.choice(context)))
+                throw new IOException("Could not restore original locale");}
+            catch(Throwable cleanup){result.putString("stream",result.getString("stream","")
+                +"FAIL locale restore ("+cleanup.getClass().getSimpleName()+").\n");}
+        }
+        finish(result.getString("stream","").startsWith("OK")
+            &&!result.getString("stream","").contains("FAIL")?Activity.RESULT_OK:Activity.RESULT_CANCELED,result);
+    }
     private boolean interactiveAndUnlocked(){
         android.os.PowerManager power=(android.os.PowerManager)getTargetContext().getSystemService(android.content.Context.POWER_SERVICE);
         android.app.KeyguardManager keyguard=(android.app.KeyguardManager)getTargetContext().getSystemService(android.content.Context.KEYGUARD_SERVICE);
@@ -390,6 +426,93 @@ public final class WalletDeviceInstrumentation extends Instrumentation {
         } finally {
             if(display!=null){final Activity opening=display;runOnMainSync(()->opening.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));}
         }
+    }
+    /** A fresh unfunded wallet exercises both locale directions and the promised lock. */
+    private void languageLoadedWalletOnly(){
+        android.content.Context context=getTargetContext();NativeRuntime runtime=NativeRuntime.get(context);
+        WalletRepository repo=new WalletRepository(context);WalletApi api=new WalletApi(runtime);
+        Map<String,?> preferences=new HashMap<>(runtime.prefs.getAll());
+        String originalLanguage=AppLanguage.choice(context);
+        File fixture=new File(runtime.root,"testnet");Activity activity=null;boolean ownsFixture=false;
+        Bundle result=new Bundle();stage="language preconditions";
+        try {
+            check("com.blocknet.wallet.offlinetest".equals(context.getPackageName())&&interactiveAndUnlocked(),
+                "Loaded-wallet language test is isolated and the screen is unlocked");
+            check(!runtime.alive()&&!runtime.syncRequested()&&!MobileCorePolicy.requested(context),
+                "No isolated Core or saved sync request is active");
+            check("mainnet".equals(runtime.network())&&!fixture.exists(),
+                "Fresh disposable testnet directory is available");
+            check(!runtime.prefs.contains("pending-send.mainnet")&&!runtime.prefs.contains("pending-send.testnet"),
+                "No pending payment can be affected");
+            ownsFixture=true;
+            check(runtime.prefs.edit().putString("network","testnet").remove("active.testnet").commit(),
+                "Disposable testnet selection persisted");
+            check(AppLanguage.set(context,AppLanguage.ENGLISH),"Test begins in English");
+            activity=startActivitySync(new Intent(Intent.ACTION_MAIN).setClassName(context.getPackageName(),
+                "com.blocknet.wallet.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            final Activity opening=activity;
+            runOnMainSync(()->opening.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
+            String name="locale_"+UUID.randomUUID().toString().replace("-","").substring(0,12);
+            String password="Locale-test-"+UUID.randomUUID();
+            stage="fresh wallet";repo.startNode();waitApi(runtime,api);repo.create(name,password);
+            check(ready(repo).spendable==0,"Unfunded testnet wallet is loaded and unlocked");
+            check(waitForText("settings",12000)&&clickText("settings",3000)
+                &&waitForText("Language / 语言",5000),"English Settings shows the language picker");
+            stage="English to Chinese";
+            check(clickText("Language / 语言",5000)&&clickText("Continue",5000)
+                &&clickText("Simplified Chinese",5000),"Visible picker chooses Chinese");
+            check(waitForChoice(context,AppLanguage.CHINESE,15000)
+                &&waitForText("语言 / Language",10000),"Chinese selection persists and renders after recreation");
+            check(repo.refresh().locked,"Changing to Chinese locked the loaded wallet");
+            repo.unlock(password);
+            check(ready(repo).loaded&&!repo.refresh().locked,"Explicit password unlock works after Chinese selection");
+            check(waitForText("设置",12000)&&clickText("设置",3000)
+                &&waitForText("语言 / Language",5000),"Chinese Settings shows the language picker");
+            stage="Chinese to English";
+            check(clickText("语言 / Language",5000)&&clickText("继续",5000)
+                &&clickText("英语",5000),"Visible picker chooses English");
+            check(waitForChoice(context,AppLanguage.ENGLISH,15000)
+                &&waitForText("Language / 语言",10000),"English selection persists and renders after recreation");
+            check(repo.refresh().locked,"Changing back to English locked the loaded wallet");
+            repo.unlock(password);
+            check(ready(repo).loaded&&!repo.refresh().locked,"Explicit password unlock works after English selection");
+            stage="same-choice repair";
+            check(waitForText("settings",12000)&&clickText("settings",3000)
+                &&clickText("Language / 语言",5000)&&clickText("Continue",5000)
+                &&clickText("English",5000),"Selecting stored English still runs the privacy flow");
+            check(waitForChoice(context,AppLanguage.ENGLISH,15000)
+                &&waitForText("Language / 语言",10000)&&repo.refresh().locked,
+                "Same-language selection recreates a locked English view");
+            result.putString("stream","OK (English-Chinese-English, lock/unlock and same-choice repair).\n");
+        } catch(Throwable failure) {
+            result.putString("stream","FAIL at "+stage+" ("+failure.getClass().getSimpleName()
+                +"). Secret-bearing exception text omitted.\n");
+        } finally {
+            if(ownsFixture)try {
+                repo.stopNode();if(runtime.alive())throw new IOException("Core still running");
+                remove(fixture);restorePreferences(runtime.prefs,preferences);
+                if(!AppLanguage.set(context,originalLanguage))throw new IOException("Language restore failed");
+                check("mainnet".equals(runtime.network())&&!runtime.alive()
+                    &&!MobileCorePolicy.requested(context)
+                    &&originalLanguage.equals(AppLanguage.choice(context)),
+                    "Isolated preferences, language and stopped Core restored");
+            } catch(Throwable cleanup) {
+                result.putString("stream",result.getString("stream","")
+                    +"FAIL cleanup ("+cleanup.getClass().getSimpleName()+").\n");
+            }
+            if(activity!=null){final Activity last=activity;runOnMainSync(()->{
+                last.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);last.finish();});}
+        }
+        finish(result.getString("stream","").startsWith("OK")
+            &&!result.getString("stream","").contains("FAIL")?Activity.RESULT_OK:Activity.RESULT_CANCELED,result);
+    }
+    private boolean waitForChoice(android.content.Context context,String choice,long timeoutMs){
+        long deadline=SystemClock.elapsedRealtime()+timeoutMs;
+        while(SystemClock.elapsedRealtime()<deadline){
+            if(choice.equals(AppLanguage.choice(context)))return true;
+            SystemClock.sleep(150);
+        }
+        return false;
     }
     /** Restores the user's preferred English UI through the visible picker. */
     private void languageRestoreEnglish(){

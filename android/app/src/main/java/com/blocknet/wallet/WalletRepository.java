@@ -444,11 +444,16 @@ public final class WalletRepository {
     public synchronized void lock() throws Exception {
         preview = null; cacheWriteGate.reset(); OfflineSnapshotStore.lock();
         if (runtime.alive()) try { api.post("/api/wallet/lock",null); }
-        catch (WalletApi.ApiException e) {
-            // Settings can be opened before any wallet is loaded. Core reports 503
-            // in that state, where there are no wallet secrets left to lock.
-            if (!lockAlreadySatisfied(e)) throw e;
+        catch (Exception e) {
+            // The service may stop Core between the liveness check and this request.
+            // Once its process is gone there is no loaded wallet left to lock.
+            // A live Core must still acknowledge the lock before the UI proceeds.
+            if (!lockSatisfiedAfterFailure(e,runtime.alive())) throw e;
         }
+    }
+    static boolean lockSatisfiedAfterFailure(Exception error,boolean coreAlive) {
+        return !coreAlive || (error instanceof WalletApi.ApiException
+            && lockAlreadySatisfied((WalletApi.ApiException)error));
     }
     static boolean lockAlreadySatisfied(WalletApi.ApiException error) {
         return error.status == 503 && "no wallet loaded".equals(error.getMessage());

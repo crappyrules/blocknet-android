@@ -38,7 +38,13 @@ final class AppLanguage {
         if(!SYSTEM.equals(choice)&&!ENGLISH.equals(choice)&&!CHINESE.equals(choice))throw new IllegalArgumentException("Invalid app language");
         if(Build.VERSION.SDK_INT>=33){
             LocaleManager manager=context.getSystemService(LocaleManager.class);
-            if(manager!=null){manager.setApplicationLocales(SYSTEM.equals(choice)?LocaleList.getEmptyLocaleList():LocaleList.forLanguageTags(CHINESE.equals(choice)?"zh-Hans-CN":"en"));return true;}
+            if(manager!=null){
+                manager.setApplicationLocales(SYSTEM.equals(choice)?LocaleList.getEmptyLocaleList()
+                    :LocaleList.forLanguageTags(CHINESE.equals(choice)?"zh-Hans-CN":"en"));
+                // Some devices defer or reject a locale change. Do not report success
+                // until the app locale service reads back the requested selection.
+                return choice.equals(choice(context));
+            }
         }
         return context.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit().putString(CHOICE,choice).commit();
     }

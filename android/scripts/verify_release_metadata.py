@@ -9,8 +9,8 @@ import sys
 
 
 OWNER_CERT_SHA256 = '4a307e802e3504f7850c546ab8b38c292211ea5d5c5be3342107edaec1255fff'
-RELEASE_TAG = 'v1.0.0-preview.3'
-RELEASE_VERSION_CODE = 3
+RELEASE_TAG = 'v1.0.0-preview.4'
+RELEASE_VERSION_CODE = 4
 
 
 def verify_metadata(cert_output, badging, tag):

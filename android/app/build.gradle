@@ -1,8 +1,8 @@
 plugins { id 'com.android.application' }
 
-// Owner-signed successor to v1.0.0-preview.2 (Android versionCode 2).
-def candidateReleaseTag = 'v1.0.0-preview.3'
-def candidateVersionCode = 3
+// Owner-signed successor to v1.0.0-preview.3 (Android versionCode 3).
+def candidateReleaseTag = 'v1.0.0-preview.4'
+def candidateVersionCode = 4
 
 // Release packages require an owner-provided key and an explicitly pinned certificate.
 // Debug builds remain available for local testing; neither can be published as an update.
@@ -22,7 +22,7 @@ gradle.taskGraph.whenReady { graph ->
 }
 def releaseSigning = [:]
 if (releaseTaskRequested) {
-    if (candidateVersionCode <= 2 || !(candidateReleaseTag ==~ /v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+/))
+    if (candidateVersionCode <= 3 || !(candidateReleaseTag ==~ /v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+/))
         throw new GradleException('Release metadata must advance beyond the published preview')
     def names = ['BLOCKNET_RELEASE_KEYSTORE', 'BLOCKNET_RELEASE_STORE_PASSWORD',
                  'BLOCKNET_RELEASE_KEY_ALIAS', 'BLOCKNET_RELEASE_KEY_PASSWORD',

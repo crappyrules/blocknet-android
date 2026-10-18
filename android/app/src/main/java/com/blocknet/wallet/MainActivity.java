@@ -699,7 +699,9 @@ public final class MainActivity extends Activity {
         String[] values={AppLanguage.SYSTEM,AppLanguage.ENGLISH,AppLanguage.CHINESE};
         new LocalizedText.Dialog(this).setTitle("Language")
             .setItems(choices,(dialog,which)->{
-                String choice=values[which];if(choice.equals(AppLanguage.choice(this)))return;
+                // Reapply even the stored choice: Android can retain an old Activity
+                // context after an app-locale change, leaving visible copy stale.
+                String choice=values[which];
                 cancelBookLookups();task("Language",()->{repo.lock();return true;},ignored->
                     LanguageChangeFlow.complete(()->{
                         OfflineSnapshotStore.lock();clearSecrets(body);
