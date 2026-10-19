@@ -1,0 +1,363 @@
+diff --git a/cli.go b/cli.go
+index 1eaa04e..53b303e 100644
+--- a/cli.go
++++ b/cli.go
+@@ -114,6 +114,15 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
+ 	ctx, cancel := context.WithCancel(context.Background())
+ 
+ 	st := cfg.Settings
++	qaPeerID, qaOnly, err := qaPeerOnly(st, params.IsTestnet, mobileMode == "1")
++	if err != nil {
++		cancel()
++		return nil, err
++	}
++	seedNodes := append(append([]string{}, cfg.SeedNodes...), st.ExtraPeers...)
++	if qaOnly {
++		seedNodes = append([]string{}, st.ExtraPeers...)
++	}
+ 	cli := &CLI{
+ 		ctx:             ctx,
+ 		cancel:          cancel,
+@@ -126,7 +135,8 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
+ 	daemonCfg := DaemonConfig{
+ 		DataDir:           cfg.DataDir,
+ 		ListenAddrs:       []string{st.Listen},
+-		SeedNodes:         append(append([]string{}, cfg.SeedNodes...), st.ExtraPeers...),
++		SeedNodes:         seedNodes,
++		QAOnlyPeerID:      qaPeerID,
+ 		P2PWhitelistPeers: st.P2PWhitelist,
+ 		P2PMaxInbound:     st.P2PMaxInbound,
+ 		P2PMaxOutbound:    st.P2PMaxOutbound,
+diff --git a/daemon.go b/daemon.go
+index 0885881..4a13e59 100644
+--- a/daemon.go
++++ b/daemon.go
+@@ -212,6 +212,7 @@ type DaemonConfig struct {
+ 	SeedMode          bool
+ 	MobileClient      bool
+ 	AllowOfflineStart bool
++	QAOnlyPeerID      peer.ID
+ 
+ 	// Mining
+ 	EnableMining bool
+@@ -398,6 +399,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
+ 	nodeCfg.SeedMode = cfg.SeedMode
+ 	nodeCfg.MobileClient = cfg.MobileClient
+ 	nodeCfg.AllowOfflineStart = cfg.AllowOfflineStart
++	nodeCfg.QAOnlyPeerID = cfg.QAOnlyPeerID
+ 	nodeCfg.Identity.KeyPath = cfg.IdentityKeyPath
+ 
+ 	node, err := p2p.NewNode(nodeCfg)
+diff --git a/main.go b/main.go
+index 3a1519c..78ed15c 100644
+--- a/main.go
++++ b/main.go
+@@ -130,10 +130,14 @@ func main() {
+ 		peerIDPort = TestnetPeerIDPort
+ 		fallbackSeeds = DefaultTestnetSeedNodes
+ 	}
+-	seedNodes := ResolveSeedNodes(DefaultSeedHosts, p2pPort, peerIDPort)
+-	if len(seedNodes) == 0 {
+-		seedNodes = fallbackSeeds
++	_, qaOnly, qaErr := qaPeerOnly(settings, *testnet, os.Getenv("BLOCKNET_MOBILE_CLIENT") == "1")
++	if qaErr != nil {
++		fmt.Fprintln(os.Stderr, "Error:", qaErr)
++		os.Exit(1)
+ 	}
++	seedNodes := qaStartupSeeds(qaOnly, fallbackSeeds, func() []string {
++		return ResolveSeedNodes(DefaultSeedHosts, p2pPort, peerIDPort)
++	})
+ 
+ 	cli, err := NewCLI(CLIConfig{
+ 		DataDir:   *dataDir,
+diff --git a/p2p/gater.go b/p2p/gater.go
+index bf75dce..61c6293 100644
+--- a/p2p/gater.go
++++ b/p2p/gater.go
+@@ -11,6 +11,7 @@ import (
+ type BanGater struct {
+ 	// isBanned checks if a peer is banned
+ 	isBanned func(peer.ID) bool
++	onlyPeer peer.ID
+ }
+ 
+ // NewBanGater creates a new connection gater that rejects banned peers
+@@ -18,20 +19,22 @@ func NewBanGater(checkBan func(peer.ID) bool) *BanGater {
+ 	return &BanGater{isBanned: checkBan}
+ }
+ 
++// OnlyPeer restricts every authenticated connection to one QA fixture peer.
++// An empty ID preserves the normal connection policy.
++func (g *BanGater) OnlyPeer(id peer.ID) { g.onlyPeer = id }
++
++func (g *BanGater) permits(pid peer.ID) bool {
++	return (g.onlyPeer == "" || pid == g.onlyPeer) && (g.isBanned == nil || !g.isBanned(pid))
++}
++
+ // InterceptPeerDial tests whether we're permitted to dial the peer
+ func (g *BanGater) InterceptPeerDial(pid peer.ID) bool {
+-	if g.isBanned == nil {
+-		return true
+-	}
+-	return !g.isBanned(pid)
++	return g.permits(pid)
+ }
+ 
+ // InterceptAddrDial tests whether we're permitted to dial the address
+ func (g *BanGater) InterceptAddrDial(pid peer.ID, addr multiaddr.Multiaddr) bool {
+-	if g.isBanned == nil {
+-		return true
+-	}
+-	return !g.isBanned(pid)
++	return g.permits(pid)
+ }
+ 
+ // InterceptAccept tests whether incoming connection is allowed
+@@ -42,19 +45,12 @@ func (g *BanGater) InterceptAccept(n network.ConnMultiaddrs) bool {
+ 
+ // InterceptSecured tests whether a secured connection is allowed
+ func (g *BanGater) InterceptSecured(dir network.Direction, pid peer.ID, n network.ConnMultiaddrs) bool {
+-	if g.isBanned == nil {
+-		return true
+-	}
+-	// Block banned peers after handshake
+-	return !g.isBanned(pid)
++	return g.permits(pid)
+ }
+ 
+ // InterceptUpgraded tests whether a fully upgraded connection is allowed
+ func (g *BanGater) InterceptUpgraded(conn network.Conn) (bool, control.DisconnectReason) {
+-	if g.isBanned == nil {
+-		return true, 0
+-	}
+-	if g.isBanned(conn.RemotePeer()) {
++	if !g.permits(conn.RemotePeer()) {
+ 		return false, control.DisconnectReason(1) // Custom reason: banned
+ 	}
+ 	return true, 0
+diff --git a/p2p/gater_test.go b/p2p/gater_test.go
+index be15912..3eae727 100644
+--- a/p2p/gater_test.go
++++ b/p2p/gater_test.go
+@@ -59,3 +59,30 @@ func TestBanGater_AllowsNonBannedPeer(t *testing.T) {
+ 		t.Fatal("expected pre-handshake accept to be allowed")
+ 	}
+ }
++
++func TestQAOnlyGaterRejectsEveryOtherPeerAndKeepsBanPolicy(t *testing.T) {
++	allowed := peer.ID("allowed")
++	other := peer.ID("public-seed")
++	addr, err := multiaddr.NewMultiaddr("/ip4/192.168.50.10/tcp/38091")
++	if err != nil {
++		t.Fatal(err)
++	}
++	gater := NewBanGater(nil)
++	gater.OnlyPeer(allowed)
++	for _, id := range []peer.ID{other, ""} {
++		if gater.InterceptPeerDial(id) || gater.InterceptAddrDial(id, addr) ||
++			gater.InterceptSecured(network.DirOutbound, id, nil) ||
++			gater.InterceptSecured(network.DirInbound, id, nil) {
++			t.Fatalf("unapproved peer %q passed the connection gate", id)
++		}
++	}
++	if !gater.InterceptPeerDial(allowed) || !gater.InterceptAddrDial(allowed, addr) ||
++		!gater.InterceptSecured(network.DirOutbound, allowed, nil) {
++		t.Fatal("approved fixture peer was rejected")
++	}
++	gater = NewBanGater(func(id peer.ID) bool { return id == allowed })
++	gater.OnlyPeer(allowed)
++	if gater.InterceptPeerDial(allowed) {
++		t.Fatal("ban check was bypassed")
++	}
++}
+diff --git a/p2p/node.go b/p2p/node.go
+index 8680e01..23fd091 100644
+--- a/p2p/node.go
++++ b/p2p/node.go
+@@ -55,6 +55,8 @@ type NodeConfig struct {
+ 	MobileClient bool
+ 	// AllowOfflineStart permits the local wallet to start without reachable seeds.
+ 	AllowOfflineStart bool
++	// QAOnlyPeerID is an opt-in connection gate in the disposable test build.
++	QAOnlyPeerID peer.ID
+ }
+ 
+ // DefaultNodeConfig returns sensible defaults
+@@ -205,6 +207,7 @@ func NewNode(cfg NodeConfig) (*Node, error) {
+ 	banGater := NewBanGater(func(pid peer.ID) bool {
+ 		return node.IsBanned(pid)
+ 	})
++	banGater.OnlyPeer(cfg.QAOnlyPeerID)
+ 
+ 	// A mobile host must not listen, map NAT ports, or enable hole punching.
+ 	options := []libp2p.Option{
+diff --git a/p2p/qa_only_test.go b/p2p/qa_only_test.go
+new file mode 100644
+index 0000000..9a205b7
+--- /dev/null
++++ b/p2p/qa_only_test.go
+@@ -0,0 +1,36 @@
++package p2p
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/libp2p/go-libp2p/core/peer"
++)
++
++func TestQAOnlyMobileConnectsFixtureAndRejectsOtherDial(t *testing.T) {
++	fixture := mustNewTestNode(t)
++	defer func() { _ = fixture.Stop() }()
++	other := mustNewTestNode(t)
++	defer func() { _ = other.Stop() }()
++	cfg := DefaultNodeConfig()
++	cfg.MobileClient = true
++	cfg.AllowOfflineStart = true
++	cfg.SeedNodes = nil
++	cfg.QAOnlyPeerID = fixture.PeerID()
++	mobile, err := NewNode(cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer func() { _ = mobile.Stop() }()
++	mustConnectNodes(t, mobile, fixture)
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++	defer cancel()
++	err = mobile.host.Connect(ctx, peer.AddrInfo{ID: other.PeerID(), Addrs: other.Addrs()})
++	if err == nil || len(mobile.host.Network().ConnsToPeer(other.PeerID())) != 0 {
++		t.Fatal("mobile connected to an unapproved peer")
++	}
++	if len(mobile.host.Network().ConnsToPeer(fixture.PeerID())) != 1 {
++		t.Fatal("mobile lost its approved fixture connection")
++	}
++}
+diff --git a/qa_peer_only.go b/qa_peer_only.go
+new file mode 100644
+index 0000000..b472aa6
+--- /dev/null
++++ b/qa_peer_only.go
+@@ -0,0 +1,57 @@
++package main
++
++import (
++	"fmt"
++	"net"
++	"os"
++	"strconv"
++
++	"github.com/libp2p/go-libp2p/core/peer"
++	"github.com/multiformats/go-multiaddr"
++)
++
++// qaPeerOnly is compiled only into the disposable bootstrap QA Core build.
++// It fails closed to one private IPv4 TCP peer and never writes a settings key.
++func qaPeerOnly(st Settings, testnet, mobile bool) (peer.ID, bool, error) {
++	mode := os.Getenv("BLOCKNET_QA_TESTNET_PEER_ONLY")
++	if mode == "" {
++		return "", false, nil
++	}
++	if mode != "1" || !testnet || !mobile || len(st.ExtraPeers) != 1 {
++		return "", false, fmt.Errorf("QA peer-only mode requires mobile testnet and exactly one extra peer")
++	}
++	addr, err := multiaddr.NewMultiaddr(st.ExtraPeers[0])
++	if err != nil {
++		return "", false, fmt.Errorf("invalid QA peer address: %w", err)
++	}
++	parts := addr.Protocols()
++	if len(parts) != 3 || parts[0].Code != multiaddr.P_IP4 ||
++		parts[1].Code != multiaddr.P_TCP || parts[2].Code != multiaddr.P_P2P {
++		return "", false, fmt.Errorf("QA peer must use private IPv4 TCP with a peer ID")
++	}
++	ipString, _ := addr.ValueForProtocol(multiaddr.P_IP4)
++	ip := net.ParseIP(ipString)
++	portString, _ := addr.ValueForProtocol(multiaddr.P_TCP)
++	port, portErr := strconv.Atoi(portString)
++	if ip == nil || !ip.IsPrivate() || portErr != nil || port < 1 || port > 65535 {
++		return "", false, fmt.Errorf("QA peer must have a private IPv4 address and valid TCP port")
++	}
++	info, err := peer.AddrInfoFromP2pAddr(addr)
++	if err != nil || info == nil || info.ID == "" {
++		return "", false, fmt.Errorf("QA peer ID is invalid")
++	}
++	return info.ID, true, nil
++}
++
++// qaStartupSeeds must not call resolver in peer-only mode: even DNS lookup of
++// public seed hosts is outside this controlled fixture's network boundary.
++func qaStartupSeeds(qaOnly bool, fallback []string, resolver func() []string) []string {
++	if qaOnly {
++		return nil
++	}
++	seeds := resolver()
++	if len(seeds) == 0 {
++		return fallback
++	}
++	return seeds
++}
+diff --git a/qa_peer_only_test.go b/qa_peer_only_test.go
+new file mode 100644
+index 0000000..0cf6e69
+--- /dev/null
++++ b/qa_peer_only_test.go
+@@ -0,0 +1,59 @@
++package main
++
++import "testing"
++
++const qaTestPeerID = "12D3KooWHgLj9iCfn6kt8ti7WZg1pCG1yD3n2UGh5jctH8r4uvUA"
++
++func TestQAPeerOnlyRequiresPrivateMobileTestnetPeer(t *testing.T) {
++	valid := Settings{ExtraPeers: []string{"/ip4/192.168.50.10/tcp/38091/p2p/" + qaTestPeerID}}
++	t.Setenv("BLOCKNET_QA_TESTNET_PEER_ONLY", "1")
++	id, enabled, err := qaPeerOnly(valid, true, true)
++	if err != nil || !enabled || id.String() != qaTestPeerID {
++		t.Fatalf("valid fixture rejected: enabled=%t err=%v", enabled, err)
++	}
++	for _, tc := range []struct {
++		name            string
++		st              Settings
++		testnet, mobile bool
++	}{
++		{"mainnet", valid, false, true},
++		{"desktop", valid, true, false},
++		{"missing", Settings{}, true, true},
++		{"extra", Settings{ExtraPeers: append(valid.ExtraPeers, valid.ExtraPeers[0])}, true, true},
++		{"public", Settings{ExtraPeers: []string{"/ip4/198.51.100.42/tcp/38080/p2p/" + qaTestPeerID}}, true, true},
++		{"loopback", Settings{ExtraPeers: []string{"/ip4/127.0.0.1/tcp/38091/p2p/" + qaTestPeerID}}, true, true},
++		{"dns", Settings{ExtraPeers: []string{"/dns4/example.invalid/tcp/38091/p2p/" + qaTestPeerID}}, true, true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			if _, _, err := qaPeerOnly(tc.st, tc.testnet, tc.mobile); err == nil {
++				t.Fatal("uncontrolled fixture was accepted")
++			}
++		})
++	}
++	t.Setenv("BLOCKNET_QA_TESTNET_PEER_ONLY", "bad")
++	if _, _, err := qaPeerOnly(valid, true, true); err == nil {
++		t.Fatal("unknown QA mode was accepted")
++	}
++	t.Setenv("BLOCKNET_QA_TESTNET_PEER_ONLY", "")
++	if _, enabled, err := qaPeerOnly(valid, false, false); err != nil || enabled {
++		t.Fatalf("ordinary mode changed: enabled=%t err=%v", enabled, err)
++	}
++}
++
++func TestQAStartupSkipsEveryPublicSeedResolver(t *testing.T) {
++	called := false
++	got := qaStartupSeeds(true, []string{"public-fallback"}, func() []string {
++		called = true
++		return []string{"public-dns"}
++	})
++	if called || len(got) != 0 {
++		t.Fatal("controlled mode consulted public seeds")
++	}
++	got = qaStartupSeeds(false, []string{"public-fallback"}, func() []string {
++		called = true
++		return nil
++	})
++	if !called || len(got) != 1 || got[0] != "public-fallback" {
++		t.Fatal("ordinary seed fallback changed")
++	}
++}

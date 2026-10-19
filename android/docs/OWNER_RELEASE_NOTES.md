@@ -1,37 +1,34 @@
-# Blocknet Android v1.0.0-preview.5
+# Blocknet Android v1.0.0-preview.7 test candidate
 
-This owner-signed preview hardens language switching on Android 12 and other
-pre-Android 13 versions. An explicit English choice now uses a fresh English
-resource context, English interface copy, and English date formatting after
-an app update or screen recreation. Simplified Chinese and Follow phone
-language remain available. A language change still locks a loaded wallet
-first. If running Core does not confirm the lock, the change does not proceed.
+This is an owner-signed phone-acceptance candidate, not a public release. Its
+workflow uploads a private Actions artifact for review and blocks publication
+of preview.7. On a disposable two-block testnet fixture, the wallet's chain
+and scan heights advanced together from 0 to 2 with the screen off. Core then
+saved the wallet, recorded a matching shutdown proof and completion marker,
+and stayed stopped. Manual Stop sync and the Wi-Fi-only setting still take
+precedence. A full mainnet sync, process death, unavailable peers, and battery
+use have not been measured on this candidate.
 
-The cause of a report that an Android 12 installation remained Chinese after
-preview.4 has not been confirmed. The earlier code already switched to English
-on an isolated Android 11 fixture. The updated build passed host tests and
-localization checks; an isolated Android 11 sidecar switched from saved Chinese
-to visible English and stayed English after process restart. Android 12 device
-validation remains open. These tests did not access a production wallet or
-send funds.
+Settings chain height, wallet height, and peer counts now update during polling
+without replacing the current Settings viewport. Passive redraws wait for a
+touch or focused edit to finish; lock and saved-view transitions still redact
+live wallet content. Offline balances and activity remain explicitly dated;
+they cannot be used to send or broadcast. This candidate also reduces repeated
+cache writes and avoids history polling when transaction alerts are disabled.
 
-Preview.5 carries forward preview.3's authenticated offline view of the last
-saved wallet state. Balances and activity show a saved time and may be stale.
-Sending and broadcasting require a running, caught-up node and a permitted
-connection. It also retains the encrypted local address book and Simplified
-Chinese wallet interface. The mobile Core profile does not listen for incoming
-peers or serve chain data and peer lists; it retains transaction stem
-forwarding for Dandelion++ privacy. Core normally stops when the app goes into
-the background and restarts on return, so live alerts stop while Core is down.
-Restart can take time, and synced-phone battery benefit has not been measured.
+The candidate retains the encrypted local address book, language selection,
+mobile Core client policy, and Dandelion++ transaction forwarding. The mobile
+Core does not listen for incoming peers or serve chain data or peer lists.
+Restored-wallet upgrade, battery use, announcement delivery, and a funded send
+remain to be checked. The controlled screen-off test used an empty wallet; it
+did not broadcast a transaction.
 
-This release keeps the owner signing certificate and advances Android
-versionCode to 5. It can update the owner-signed preview.2, preview.3 and
-preview.4 in place while retaining app data. The address book is encrypted
+This candidate keeps the owner signing certificate and advances Android
+versionCode to 7. It can update owner-signed preview.2 through preview.6
+in place while retaining app data. The address book is encrypted
 with a separate device-bound Android Keystore key; it is not a transferable
 backup. Record important recipient addresses separately before replacing or
-clearing a device. A fluent review of the Chinese wording and a production
-wallet upgrade test remain open.
+clearing a device. A fluent review of the Chinese wording remains open.
 
 ## Older debug-signed previews
 
@@ -57,4 +54,4 @@ access to the coins.
 The expected APK signing-certificate SHA-256 is
 `4a307e802e3504f7850c546ab8b38c292211ea5d5c5be3342107edaec1255fff`.
 Check the package, version, certificate, and APK checksum before installation.
-Publishing this APK does not broadcast an on-chain update announcement.
+Signing this test APK does not broadcast an on-chain update announcement.

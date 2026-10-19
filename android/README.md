@@ -228,7 +228,7 @@ Onboarding, the wallet network card and Node settings show the core-reported syn
 
 ## Pinned mobile Core build
 
-Every APK uses the pinned upstream Core commit plus ordered patches 0001–0009.
+Every APK uses the pinned upstream Core commit plus ordered patches 0001–0011.
 Build `blocknet-core-arm64-android-experimental` in an isolated output directory
 with `scripts/build-core-android.sh`, then pass that directory through
 `-PcoreMobileDir` to Gradle and `--core-mobile-dir` to `verify-apk.py`. The

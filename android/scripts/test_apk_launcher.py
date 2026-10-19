@@ -6,7 +6,11 @@ from apk_launcher import verify_launcher
 MANIFEST = """A: android:icon(0x01010002)=@0x7f030000
 A: android:roundIcon(0x0101052c)=@0x7f030000
 A: android:name="android.intent.action.MAIN"
-A: android:name="android.intent.category.LAUNCHER"""
+A: android:name="android.intent.category.LAUNCHER"
+E: activity-alias
+  A: android:name="com.blocknet.wallet.PaymentLinkActivity"
+  A: android:enabled(0x0101000e)=true
+  E: intent-filter"""
 
 
 def fixture(optimized):
@@ -36,6 +40,20 @@ resource 0x7f030000 mipmap/ic_launcher
 
 
 class ApkLauncherTest(unittest.TestCase):
+    def test_sidecar_artwork_and_disabled_payment_alias(self):
+        resources, xml = fixture(False)
+        for old, new in (
+            ("color/ic_launcher_background", "color/ic_offlinetest_launcher_background"),
+            ("drawable/ic_launcher_foreground", "drawable/ic_offlinetest_launcher_foreground"),
+            ("drawable/ic_launcher_monochrome", "drawable/ic_offlinetest_launcher_monochrome"),
+            ("mipmap/ic_launcher", "mipmap/ic_launcher_offlinetest"),
+        ):
+            resources = resources.replace(old, new, 1)
+        sidecar_manifest = MANIFEST.replace("enabled(0x0101000e)=true", "enabled(0x0101000e)=false")
+        verify_launcher(resources, sidecar_manifest, set(xml), xml.__getitem__, sidecar=True)
+        with self.assertRaisesRegex(ValueError, "Payment-link alias"):
+            verify_launcher(resources, MANIFEST, set(xml), xml.__getitem__, sidecar=True)
+
     def test_debug_and_renamed_release_resources(self):
         for optimized in (False, True):
             with self.subTest(optimized=optimized):

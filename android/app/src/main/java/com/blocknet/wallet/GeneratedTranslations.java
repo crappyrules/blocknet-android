@@ -99,8 +99,10 @@ final class GeneratedTranslations {
         exact.put("Cancel",R.string.loc_cancel_19766ed6);
         exact.put("Cannot read selected file",R.string.loc_cannot_read_selected_file_6e4f251c);
         exact.put("Cannot write to selected file",R.string.loc_cannot_write_to_selected_file_f3b4e592);
+        exact.put("Chain caught up. Open wallet to finish its scan.",R.string.loc_chain_caught_up_open_wallet_ba755c34);
         exact.put("Chain height",R.string.loc_chain_height_cf1571b8);
         templates.add(new Template(R.string.loc_chain_height_1_s_f91f8774,"Chain height: %1$s"));
+        exact.put("Chain syncing · open wallet to finish its scan",R.string.loc_chain_syncing_open_wallet_to_f8863ce2);
         templates.add(new Template(R.string.loc_chain_1_s_2_s_d76cc509,"Chain: %1$s / %2$s blocks"));
         templates.add(new Template(R.string.loc_chain_1_s_blocks_finding_42880734,"Chain: %1$s blocks · finding network target"));
         exact.put("Change network",R.string.loc_change_network_7ef03faf);
@@ -202,6 +204,7 @@ final class GeneratedTranslations {
         exact.put("Ethernet",R.string.loc_ethernet_681e1209);
         exact.put("Export backup",R.string.loc_export_backup_d6dfd0f0);
         exact.put("Export encrypted backup",R.string.loc_export_encrypted_backup_2d2c38e3);
+        exact.put("First or restored wallet sync can continue with the screen off until the chain and wallet scan catch up. If Android stops the process, reopen and unlock to resume. After initial sync, leaving the wallet stops Core and background payment alerts. Saved balances remain dated until catch-up. Battery savings have not been measured.",R.string.loc_first_or_restored_wallet_sync_006905d9);
         exact.put("First sync may take time. Keep free storage available as the blockchain grows. A 64-bit ARM device running Android 8 or later is required.",R.string.loc_first_sync_may_take_time_3799d4d1);
         exact.put("Follow phone language",R.string.loc_follow_phone_language_5b74c6f9);
         templates.add(new Template(R.string.loc_free_app_storage_1_s_3a2c94ff,"Free app storage: %1$s"));
@@ -221,6 +224,11 @@ final class GeneratedTranslations {
         exact.put("Incomplete signed shortname response",R.string.loc_incomplete_signed_shortname_response_29059e28);
         exact.put("Incorrect wallet password or damaged saved view.",R.string.loc_incorrect_wallet_password_or_damaged_325f194f);
         exact.put("Incorrect wallet password or damaged wallet file.",R.string.loc_incorrect_wallet_password_or_damaged_5b618fe8);
+        exact.put("Initial sync pause failed. Open wallet to check node status.",R.string.loc_initial_sync_pause_failed_open_a65f038b);
+        exact.put("Initial sync state could not be saved. Open wallet to retry.",R.string.loc_initial_sync_state_could_not_a7414556);
+        exact.put("Initial wallet scan and chain sync continuing",R.string.loc_initial_wallet_scan_and_chain_71fd4ee1);
+        templates.add(new Template(R.string.loc_initial_wallet_sync_running_1_9aac90b1,"Initial wallet sync running · %1$s"));
+        exact.put("Initial wallet sync running · waiting for Core",R.string.loc_initial_wallet_sync_running_waiting_1d15d108);
         exact.put("Interrupted while stopping offline wallet reader.",R.string.loc_interrupted_while_stopping_offline_wallet_0f1c537a);
         exact.put("Invalid Blocknet address character",R.string.loc_invalid_blocknet_address_character_16208696);
         exact.put("Invalid Blocknet address checksum or network",R.string.loc_invalid_blocknet_address_checksum_or_fa5f396a);
@@ -332,6 +340,7 @@ final class GeneratedTranslations {
         exact.put("Open this wallet once to establish its activity binding",R.string.loc_open_this_wallet_once_to_4c8aaf57);
         templates.add(new Template(R.string.loc_open_transaction_1_s_in_63751732,"Open transaction %1$s in Blocknet explorer"));
         exact.put("Open wallet",R.string.loc_open_wallet_762a16c9);
+        exact.put("Open wallet to resume initial sync",R.string.loc_open_wallet_to_resume_initial_81b10a7c);
         exact.put("Operation could not be completed. Please try again.",R.string.loc_operation_could_not_be_completed_3721779e);
         exact.put("Optional $shortname",R.string.loc_optional_shortname_5a472648);
         exact.put("Optional $shortname for full address",R.string.loc_optional_shortname_for_full_address_e207e4ae);
@@ -461,7 +470,6 @@ final class GeneratedTranslations {
         exact.put("Stop node when wallet leaves foreground",R.string.loc_stop_node_when_wallet_leaves_02e52a0e);
         exact.put("Stop sync",R.string.loc_stop_sync_b7379b6e);
         exact.put("Stopping node for the sync network preference…",R.string.loc_stopping_node_for_the_sync_c60b8e29);
-        exact.put("Stops Core and background payment alerts. Reopening the wallet restarts Core and scans from saved state; large chains can make each restart slow. Saved balances remain dated until catch-up. Battery savings have not been measured.",R.string.loc_stops_core_and_background_payment_5480090f);
         exact.put("Strong biometric unlock is available.",R.string.loc_strong_biometric_unlock_is_available_da662b41);
         exact.put("Strong biometric unlock is unavailable. Use your wallet password.",R.string.loc_strong_biometric_unlock_is_unavailable_8b29bf2c);
         exact.put("Switch / add wallet",R.string.loc_switch_add_wallet_a5bc7e58);
@@ -590,6 +598,7 @@ final class GeneratedTranslations {
         exact.put("Wallet height",R.string.loc_wallet_height_0f27fcd6);
         templates.add(new Template(R.string.loc_wallet_last_scanned_height_1_f2ec4f3f,"Wallet last scanned height: %1$s · chain height unavailable offline"));
         exact.put("Wallet list",R.string.loc_wallet_list_1a7090ad);
+        exact.put("Wallet lock failed. Open wallet to resume sync.",R.string.loc_wallet_lock_failed_open_wallet_bcd753cf);
         exact.put("Wallet name",R.string.loc_wallet_name_ff5cf34a);
         exact.put("Wallet name: 1–48 letters, numbers, dashes or underscores",R.string.loc_wallet_name_1_48_letters_65dd59bf);
         exact.put("Wallet network changed. Check the recipient again.",R.string.loc_wallet_network_changed_check_the_bdf49a31);

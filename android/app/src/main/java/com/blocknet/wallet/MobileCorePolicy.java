@@ -79,11 +79,24 @@ final class MobileCorePolicy {
         return mobileClient && preferences.getBoolean(KEY,DEFAULT_FOREGROUND_ONLY);
     }
 
-    static boolean permitted(Context context) { return shouldRun(enabled(context), foreground, true, true); }
-    static boolean paused(Context context) { return enabled(context) && !foreground; }
+    // Wallet UI, signing and send operations still require the visible app,
+    // even when the user selected continuous background Core sync.
+    static boolean permitted(Context context) { return !BuildConfig.CORE_MOBILE_CLIENT || foreground; }
+    // Only the existing foreground service may keep Core syncing during a
+    // pending first scan. This does not grant interactive wallet operations.
+    static boolean syncPermitted(Context context) {
+        return shouldRun(enabled(context),foreground,BootstrapSyncState.pending(context),true,true);
+    }
+    static boolean paused(Context context) { return enabled(context) && !foreground && !BootstrapSyncState.pending(context); }
+    static boolean background() { return BuildConfig.CORE_MOBILE_CLIENT && !foreground; }
 
     static boolean shouldRun(boolean enabled, boolean foreground, boolean requested, boolean networkAllowed) {
         return requested && networkAllowed && (!enabled || foreground);
+    }
+
+    static boolean shouldRun(boolean enabled,boolean foreground,boolean bootstrapPending,
+                             boolean requested,boolean networkAllowed) {
+        return requested&&networkAllowed&&(!enabled||foreground||bootstrapPending);
     }
 
     static boolean shouldAutoResume(boolean foreground, boolean persistedRequest, boolean runningRequest) {

@@ -1,8 +1,8 @@
 plugins { id 'com.android.application' }
 
-// Owner-signed successor to v1.0.0-preview.4 (Android versionCode 4).
-def candidateReleaseTag = 'v1.0.0-preview.5'
-def candidateVersionCode = 5
+// Owner-signed test successor to v1.0.0-preview.6 (Android versionCode 6).
+def candidateReleaseTag = 'v1.0.0-preview.7'
+def candidateVersionCode = 7
 
 // Release packages require an owner-provided key and an explicitly pinned certificate.
 // Debug builds remain available for local testing; neither can be published as an update.
@@ -13,6 +13,11 @@ def releaseTaskRequested = gradle.startParameter.taskNames.any { taskName ->
     def name = taskName.tokenize(':').last()
     name.toLowerCase(java.util.Locale.ROOT).contains('release') || name in ['assemble', 'build', 'bundle']
 }
+// Produce an explicitly unsigned local release-variant artifact when the owner
+// signing material is unavailable. This cannot pass signed-release verification.
+def unsignedReleaseArtifact = project.hasProperty('unsignedReleaseArtifact')
+if (unsignedReleaseArtifact && !releaseTaskRequested)
+    throw new GradleException('unsignedReleaseArtifact requires an explicit release build task')
 // Gradle accepts abbreviated task names (for example assembleRel). Resolve the
 // actual graph too, so an abbreviation cannot package an unsigned release.
 gradle.taskGraph.whenReady { graph ->
@@ -22,36 +27,38 @@ gradle.taskGraph.whenReady { graph ->
 }
 def releaseSigning = [:]
 if (releaseTaskRequested) {
-    if (candidateVersionCode <= 4 || !(candidateReleaseTag ==~ /v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+/))
+    if (candidateVersionCode <= 6 || !(candidateReleaseTag ==~ /v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+/))
         throw new GradleException('Release metadata must advance beyond the published preview')
-    def names = ['BLOCKNET_RELEASE_KEYSTORE', 'BLOCKNET_RELEASE_STORE_PASSWORD',
-                 'BLOCKNET_RELEASE_KEY_ALIAS', 'BLOCKNET_RELEASE_KEY_PASSWORD',
-                 'BLOCKNET_RELEASE_CERT_SHA256']
-    names.each { name ->
-        def value = providers.environmentVariable(name).orNull
-        if (value == null || value.isEmpty())
-            throw new GradleException("Signed release build requires $name")
-        releaseSigning[name] = value
+    if (!unsignedReleaseArtifact) {
+        def names = ['BLOCKNET_RELEASE_KEYSTORE', 'BLOCKNET_RELEASE_STORE_PASSWORD',
+                     'BLOCKNET_RELEASE_KEY_ALIAS', 'BLOCKNET_RELEASE_KEY_PASSWORD',
+                     'BLOCKNET_RELEASE_CERT_SHA256']
+        names.each { name ->
+            def value = providers.environmentVariable(name).orNull
+            if (value == null || value.isEmpty())
+                throw new GradleException("Signed release build requires $name")
+            releaseSigning[name] = value
+        }
+        def keyFile = new File(releaseSigning.BLOCKNET_RELEASE_KEYSTORE)
+        if (!keyFile.isAbsolute() || !keyFile.isFile())
+            throw new GradleException('Release keystore must be an existing absolute file')
+        def expected = releaseSigning.BLOCKNET_RELEASE_CERT_SHA256.toLowerCase(java.util.Locale.ROOT)
+        if (!(expected ==~ /[0-9a-f]{64}/))
+            throw new GradleException('Release certificate SHA-256 must be 64 hexadecimal characters')
+        if (!(pinnedOwnerReleaseCertSha256 ==~ /[0-9a-f]{64}/) || expected != pinnedOwnerReleaseCertSha256)
+            throw new GradleException('Release certificate is not the pinned owner certificate')
+        try {
+            def keyStore = java.security.KeyStore.getInstance(keyFile,
+                releaseSigning.BLOCKNET_RELEASE_STORE_PASSWORD.toCharArray())
+            def alias = releaseSigning.BLOCKNET_RELEASE_KEY_ALIAS
+            if (!keyStore.isKeyEntry(alias) || keyStore.getCertificate(alias) == null)
+                throw new GradleException('Release key alias is missing')
+            def actual = java.security.MessageDigest.getInstance('SHA-256')
+                .digest(keyStore.getCertificate(alias).getEncoded()).encodeHex().toString()
+            if (actual != expected) throw new GradleException('Release signing certificate does not match the pinned SHA-256')
+        } catch (GradleException error) { throw error }
+        catch (Exception error) { throw new GradleException('Release signing material could not be validated', error) }
     }
-    def keyFile = new File(releaseSigning.BLOCKNET_RELEASE_KEYSTORE)
-    if (!keyFile.isAbsolute() || !keyFile.isFile())
-        throw new GradleException('Release keystore must be an existing absolute file')
-    def expected = releaseSigning.BLOCKNET_RELEASE_CERT_SHA256.toLowerCase(java.util.Locale.ROOT)
-    if (!(expected ==~ /[0-9a-f]{64}/))
-        throw new GradleException('Release certificate SHA-256 must be 64 hexadecimal characters')
-    if (!(pinnedOwnerReleaseCertSha256 ==~ /[0-9a-f]{64}/) || expected != pinnedOwnerReleaseCertSha256)
-        throw new GradleException('Release certificate is not the pinned owner certificate')
-    try {
-        def keyStore = java.security.KeyStore.getInstance(keyFile,
-            releaseSigning.BLOCKNET_RELEASE_STORE_PASSWORD.toCharArray())
-        def alias = releaseSigning.BLOCKNET_RELEASE_KEY_ALIAS
-        if (!keyStore.isKeyEntry(alias) || keyStore.getCertificate(alias) == null)
-            throw new GradleException('Release key alias is missing')
-        def actual = java.security.MessageDigest.getInstance('SHA-256')
-            .digest(keyStore.getCertificate(alias).getEncoded()).encodeHex().toString()
-        if (actual != expected) throw new GradleException('Release signing certificate does not match the pinned SHA-256')
-    } catch (GradleException error) { throw error }
-    catch (Exception error) { throw new GradleException('Release signing material could not be validated', error) }
 }
 
 // Every APK requires an explicit, provenance-checked build of the pinned mobile Core.
@@ -66,6 +73,9 @@ if (mobileDirectory == null)
 def coreMobileEnabled = true
 def activityDirectory = mobileDirectory
 def coreActivityEnabled = true
+def bootstrapQaEnabled = project.hasProperty('bootstrapIntegration')
+if (bootstrapQaEnabled && releaseTaskRequested)
+    throw new GradleException('Controlled-peer bootstrap QA must never build a release APK')
 // Public owner pin. The private Ed25519 signer stays outside all repositories.
 def pinnedAnnouncementSigner = '333c7c85db80716deceb4da838b5ae3145ee4b0ed0a64966f60aa56e12972b16'
 // Dedicated mainnet announcement address KNNpZhPcJX92oAyvcVWJhQXJjsWRYsEiPHej6ZTM2LuSJBDS3VQebjUjUCzYqBnidt1JXYUiUgA69HeBoTuVuQYWwnhQN.
@@ -98,7 +108,7 @@ if (announcementReady) {
         throw new GradleException('Announcement APK certificate does not match the pinned owner certificate')
 }
 if (releaseTaskRequested && (!coreMobileEnabled || !announcementReady ||
-    !announcement.BLOCKNET_ANNOUNCEMENT_APK_CERT_SHA256.equalsIgnoreCase(releaseSigning.BLOCKNET_RELEASE_CERT_SHA256)))
+    (!unsignedReleaseArtifact && !announcement.BLOCKNET_ANNOUNCEMENT_APK_CERT_SHA256.equalsIgnoreCase(releaseSigning.BLOCKNET_RELEASE_CERT_SHA256))))
     throw new GradleException('Signed release requires the reviewed mobile Core and a complete announcement channel bound to its certificate')
 def selectedCore = new File(activityDirectory, 'blocknet-core-arm64-android-experimental')
 def activityProvenance = new File(activityDirectory, 'build-provenance.json')
@@ -111,6 +121,9 @@ def walletScanPatch = rootProject.file('core-patches/0006-core-wallet-scan-seria
 def walletReadinessPatch = rootProject.file('core-patches/0007-core-wallet-send-readiness.patch')
 def walletFollowupPatch = rootProject.file('core-patches/0008-core-wallet-send-reorg-activity.patch')
 def walletOverflowPatch = rootProject.file('core-patches/0009-core-wallet-notification-overflow.patch')
+def bootstrapPatch = rootProject.file('core-patches/0010-bootstrap-progress.patch')
+def fetchedScanPatch = rootProject.file('core-patches/0011-fetched-block-wallet-scan.patch')
+def bootstrapQaPatch = rootProject.file('qa/controlled-peer.patch')
 def offlineViewArgument = providers.gradleProperty('offlineWalletViewDir').orNull
 def offlineViewDirectory = offlineViewArgument == null ? null : new File(offlineViewArgument)
 def offlineViewBinary = offlineViewDirectory == null ? null : new File(offlineViewDirectory, 'blocknet-wallet-view-arm64-android')
@@ -123,12 +136,17 @@ def validateActivity = {
                     new File(activityDirectory, 'android-cgo-link-flags.patch'),
                     new File(activityDirectory, 'onchain-announcement-scan.patch')]
     if (coreMobileEnabled) required += [mobilePatch, new File(activityDirectory, 'mobile-client-policy.patch'),
-        walletPersistencePatch, walletScanPatch, walletReadinessPatch, walletFollowupPatch, walletOverflowPatch,
+        walletPersistencePatch, walletScanPatch, walletReadinessPatch, walletFollowupPatch, walletOverflowPatch, bootstrapPatch, fetchedScanPatch,
         new File(activityDirectory, walletPersistencePatch.name),
         new File(activityDirectory, walletScanPatch.name),
         new File(activityDirectory, walletReadinessPatch.name),
         new File(activityDirectory, walletFollowupPatch.name),
-        new File(activityDirectory, walletOverflowPatch.name)]
+        new File(activityDirectory, walletOverflowPatch.name),
+        new File(activityDirectory, bootstrapPatch.name),
+        new File(activityDirectory, fetchedScanPatch.name)]
+    if (bootstrapQaEnabled) required += [bootstrapQaPatch,
+        new File(activityDirectory, 'controlled-peer.patch'),
+        new File(activityDirectory, 'reviewed-build-provenance.json')]
     required.each { if (!it.isFile()) throw new GradleException("Missing experimental Core build input: $it") }
     def provenance
     try { provenance = new groovy.json.JsonSlurper().parse(activityProvenance) }
@@ -147,7 +165,11 @@ def validateActivity = {
         wallet_scan_patch_sha256: walletScanPatch,
         wallet_send_readiness_patch_sha256: walletReadinessPatch,
         wallet_followup_patch_sha256: walletFollowupPatch,
-        wallet_notification_overflow_patch_sha256: walletOverflowPatch]
+        wallet_notification_overflow_patch_sha256: walletOverflowPatch,
+        bootstrap_progress_patch_sha256: bootstrapPatch,
+        fetched_block_wallet_scan_patch_sha256: fetchedScanPatch]
+    if (bootstrapQaEnabled) expected += [qa_peer_only_patch_sha256: bootstrapQaPatch,
+        reviewed_base_provenance_sha256: new File(activityDirectory, 'reviewed-build-provenance.json')]
     expected.each { field, input ->
         if (!(provenance[field] instanceof String) || !(provenance[field] ==~ /[0-9a-f]{64}/) || provenance[field] != sha256(input))
             throw new GradleException("Experimental Core provenance $field does not match $input")
@@ -157,15 +179,26 @@ def validateActivity = {
         sha256(new File(activityDirectory, 'onchain-announcement-scan.patch')) != provenance.announcement_scan_patch_sha256 ||
         sha256(new File(activityDirectory, 'Cargo.lock')) != provenance.cargo_lock_sha256)
         throw new GradleException('Experimental build patch copies differ from the reviewed source patches')
+    def normalPatchOrder = ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', walletPersistencePatch.name, walletScanPatch.name, walletReadinessPatch.name, walletFollowupPatch.name, walletOverflowPatch.name, bootstrapPatch.name, fetchedScanPatch.name]
     if (coreMobileEnabled && (provenance.mobile_client_capability != 1 ||
-        provenance.patch_order != ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', walletPersistencePatch.name, walletScanPatch.name, walletReadinessPatch.name, walletFollowupPatch.name, walletOverflowPatch.name] ||
+        provenance.patch_order != (bootstrapQaEnabled ? normalPatchOrder + ['qa/controlled-peer.patch'] : normalPatchOrder) ||
         sha256(new File(activityDirectory, 'mobile-client-policy.patch')) != provenance.mobile_client_patch_sha256 ||
         sha256(new File(activityDirectory, walletPersistencePatch.name)) != provenance.wallet_persistence_patch_sha256 ||
         sha256(new File(activityDirectory, walletScanPatch.name)) != provenance.wallet_scan_patch_sha256 ||
         sha256(new File(activityDirectory, walletReadinessPatch.name)) != provenance.wallet_send_readiness_patch_sha256 ||
         sha256(new File(activityDirectory, walletFollowupPatch.name)) != provenance.wallet_followup_patch_sha256 ||
-        sha256(new File(activityDirectory, walletOverflowPatch.name)) != provenance.wallet_notification_overflow_patch_sha256))
+        sha256(new File(activityDirectory, walletOverflowPatch.name)) != provenance.wallet_notification_overflow_patch_sha256 ||
+        sha256(new File(activityDirectory, bootstrapPatch.name)) != provenance.bootstrap_progress_patch_sha256 ||
+        sha256(new File(activityDirectory, fetchedScanPatch.name)) != provenance.fetched_block_wallet_scan_patch_sha256))
         throw new GradleException('Mobile Core capability or ordered patch provenance is invalid')
+    if (bootstrapQaEnabled) {
+        def base = new groovy.json.JsonSlurper().parse(new File(activityDirectory, 'reviewed-build-provenance.json'))
+        if (provenance.qa_peer_only_capability != 1 || provenance.qa_only != true ||
+            provenance.base_binary_sha256 != base.binary_sha256 ||
+            sha256(new File(activityDirectory, 'controlled-peer.patch')) != provenance.qa_peer_only_patch_sha256)
+            throw new GradleException('Controlled-peer QA Core provenance is invalid')
+    } else if (provenance.qa_only == true || provenance.qa_peer_only_patch_sha256 != null)
+        throw new GradleException('Normal APK unexpectedly contains controlled-peer QA Core')
     if (!coreMobileEnabled && provenance.mobile_client_patch_sha256 != null)
         throw new GradleException('Activity variant unexpectedly contains mobile Core patch')
 }
@@ -193,10 +226,13 @@ def activityAssets = layout.buildDirectory.dir('generated/blocknetCoreActivityAs
 tasks.register('prepareBlocknetBinaries') {
     inputs.files(selectedCore, activityPatch, activityShim, announcementPatch)
     if (coreMobileEnabled) inputs.files(mobilePatch, new File(activityDirectory, 'mobile-client-policy.patch'),
-        walletPersistencePatch, walletScanPatch, walletReadinessPatch, walletFollowupPatch, walletOverflowPatch,
+        walletPersistencePatch, walletScanPatch, walletReadinessPatch, walletFollowupPatch, walletOverflowPatch, bootstrapPatch, fetchedScanPatch,
         new File(activityDirectory, walletPersistencePatch.name), new File(activityDirectory, walletScanPatch.name),
         new File(activityDirectory, walletReadinessPatch.name), new File(activityDirectory, walletFollowupPatch.name),
-        new File(activityDirectory, walletOverflowPatch.name))
+        new File(activityDirectory, walletOverflowPatch.name), new File(activityDirectory, bootstrapPatch.name),
+        new File(activityDirectory, fetchedScanPatch.name))
+    if (bootstrapQaEnabled) inputs.files(bootstrapQaPatch, new File(activityDirectory, 'controlled-peer.patch'),
+        new File(activityDirectory, 'reviewed-build-provenance.json'))
     if(offlineViewDirectory != null) inputs.files(offlineViewBinary,offlineViewProvenance)
     inputs.files(rootProject.file('offline-wallet-view/main.go'),rootProject.file('offline-wallet-view/main_test.go'))
     if (coreActivityEnabled) inputs.files(activityProvenance, new File(activityDirectory, 'Cargo.lock'), new File(activityDirectory, 'applied.patch'), new File(activityDirectory, 'android-cgo-link-flags.patch'), new File(activityDirectory, 'onchain-announcement-scan.patch'))
@@ -221,13 +257,15 @@ tasks.register('prepareBlocknetBinaries') {
     }
 }
 
-if (project.hasProperty('addressBookIntegration') && project.hasProperty('isolatedDeviceIntegration')) {
+if (['addressBookIntegration','isolatedDeviceIntegration','bootstrapIntegration'].count { project.hasProperty(it) } > 1) {
     throw new GradleException('Choose one isolated instrumentation runner')
 }
-def addressBookSidecar = project.hasProperty('addressBookIntegration') || project.hasProperty('isolatedDeviceIntegration')
+def addressBookSidecar = project.hasProperty('addressBookIntegration') || project.hasProperty('isolatedDeviceIntegration') || project.hasProperty('bootstrapIntegration')
 if (addressBookSidecar && project.findProperty('isolatedTestApplicationId') != 'com.blocknet.wallet.offlinetest') {
     throw new GradleException('Isolated instrumentation requires -PisolatedTestApplicationId=com.blocknet.wallet.offlinetest')
 }
+if (unsignedReleaseArtifact && addressBookSidecar)
+    throw new GradleException('Unsigned release artifact must use the production application ID')
 def sidecarVersion = providers.gradleProperty('isolatedTestVersionCode').orNull ?: '2'
 if (addressBookSidecar && !(sidecarVersion in ['2','3'])) {
     throw new GradleException('Isolated address-book test version must be 2 or 3')
@@ -239,17 +277,23 @@ android {
     buildToolsVersion '36.0.0'
     defaultConfig {
         applicationId addressBookSidecar ? 'com.blocknet.wallet.offlinetest' : 'com.blocknet.wallet'
+        manifestPlaceholders = [
+            walletLauncherLabel: addressBookSidecar ? '@string/app_name_offlinetest' : '@string/app_name',
+            walletLauncherIcon: addressBookSidecar ? '@mipmap/ic_launcher_offlinetest' : '@mipmap/ic_launcher',
+            paymentLinkEnabled: addressBookSidecar ? 'false' : 'true'
+        ]
         minSdk 26
         targetSdk 36
         versionCode addressBookSidecar ? sidecarVersion.toInteger() : candidateVersionCode
         versionName candidateReleaseTag.substring(1) + (addressBookSidecar ? '-offline-test' : '')
         // Update this tag alongside the next published preview release.
         buildConfigField 'String', 'RELEASE_TAG', '"' + candidateReleaseTag + '"'
-        testInstrumentationRunner project.hasProperty('isolatedDeviceIntegration') ? 'com.blocknet.wallet.WalletDeviceInstrumentation' : project.hasProperty('languageIntegration') ? 'com.blocknet.wallet.WalletLanguageInstrumentation' : project.hasProperty('addressBookIntegration') ? 'com.blocknet.wallet.AddressBookKeystoreInstrumentation' : project.hasProperty('activityIntegration') ? 'com.blocknet.wallet.WalletActivityInstrumentation' : project.hasProperty('cameraIntegration') ? 'com.blocknet.wallet.WalletCameraInstrumentation' : project.hasProperty('notificationIntegration') ? 'com.blocknet.wallet.WalletNotificationInstrumentation' : project.hasProperty('shortnameIntegration') ? 'com.blocknet.wallet.ShortnameVerificationInstrumentation' : project.hasProperty('biometricIntegration') ? 'com.blocknet.wallet.WalletBiometricInstrumentation' : project.hasProperty('networkIntegration') ? 'com.blocknet.wallet.WalletNetworkInstrumentation' : project.hasProperty('identityIntegration') ? 'com.blocknet.wallet.WalletIdentityInstrumentation' : project.hasProperty('checkpointIntegration') ? 'com.blocknet.wallet.WalletCheckpointInstrumentation' : project.hasProperty('deviceIntegration') ? 'com.blocknet.wallet.WalletDeviceInstrumentation' : project.hasProperty('apiIntegration') ? 'com.blocknet.wallet.WalletApiInstrumentation' : 'com.blocknet.wallet.WalletSmokeInstrumentation'
+        testInstrumentationRunner project.hasProperty('bootstrapIntegration') ? 'com.blocknet.wallet.WalletBootstrapInstrumentation' : project.hasProperty('isolatedDeviceIntegration') ? 'com.blocknet.wallet.WalletDeviceInstrumentation' : project.hasProperty('languageIntegration') ? 'com.blocknet.wallet.WalletLanguageInstrumentation' : project.hasProperty('addressBookIntegration') ? 'com.blocknet.wallet.AddressBookKeystoreInstrumentation' : project.hasProperty('activityIntegration') ? 'com.blocknet.wallet.WalletActivityInstrumentation' : project.hasProperty('cameraIntegration') ? 'com.blocknet.wallet.WalletCameraInstrumentation' : project.hasProperty('notificationIntegration') ? 'com.blocknet.wallet.WalletNotificationInstrumentation' : project.hasProperty('shortnameIntegration') ? 'com.blocknet.wallet.ShortnameVerificationInstrumentation' : project.hasProperty('biometricIntegration') ? 'com.blocknet.wallet.WalletBiometricInstrumentation' : project.hasProperty('networkIntegration') ? 'com.blocknet.wallet.WalletNetworkInstrumentation' : project.hasProperty('identityIntegration') ? 'com.blocknet.wallet.WalletIdentityInstrumentation' : project.hasProperty('checkpointIntegration') ? 'com.blocknet.wallet.WalletCheckpointInstrumentation' : project.hasProperty('deviceIntegration') ? 'com.blocknet.wallet.WalletDeviceInstrumentation' : project.hasProperty('apiIntegration') ? 'com.blocknet.wallet.WalletApiInstrumentation' : 'com.blocknet.wallet.WalletSmokeInstrumentation'
         ndk { abiFilters 'arm64-v8a' }
         buildConfigField 'String', 'CORE_VERSION', coreMobileEnabled ? '"0.22.0-mobile1"' : coreActivityEnabled ? '"0.22.0-activity1"' : '"0.22.0"'
         buildConfigField 'boolean', 'CORE_ACTIVITY_API', coreActivityEnabled.toString()
         buildConfigField 'boolean', 'CORE_MOBILE_CLIENT', coreMobileEnabled.toString()
+        buildConfigField 'boolean', 'BOOTSTRAP_QA', bootstrapQaEnabled.toString()
         buildConfigField 'boolean', 'ANNOUNCEMENT_ENABLED', (coreActivityEnabled && announcementReady).toString()
         buildConfigField 'String', 'ANNOUNCEMENT_PRIMARY_PUB', '"' + pinnedAnnouncementSigner + '"'
         buildConfigField 'String', 'ANNOUNCEMENT_VIEW_PRIV', '"' + (announcementReady ? pinnedAnnouncementViewPriv : '') + '"'
@@ -260,7 +304,7 @@ android {
     sourceSets.main.jniLibs.srcDirs = [bundledNative]
     sourceSets.main.assets.srcDir(activityAssets)
     signingConfigs {
-        if (releaseTaskRequested) {
+        if (releaseTaskRequested && !unsignedReleaseArtifact) {
             ownerRelease {
                 storeFile file(releaseSigning.BLOCKNET_RELEASE_KEYSTORE)
                 storePassword releaseSigning.BLOCKNET_RELEASE_STORE_PASSWORD
@@ -282,7 +326,7 @@ android {
     }
     buildTypes {
         release {
-            if (releaseTaskRequested) signingConfig signingConfigs.ownerRelease
+            if (releaseTaskRequested && !unsignedReleaseArtifact) signingConfig signingConfigs.ownerRelease
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }

@@ -23,7 +23,7 @@ def _resources(table):
     return result
 
 
-def verify_launcher(resources, manifest, archive_names, dump_xmltree):
+def verify_launcher(resources, manifest, archive_names, dump_xmltree, sidecar=False):
     """Raise ValueError unless the packaged adaptive icon and its references work."""
     entries = _resources(resources)
 
@@ -32,16 +32,31 @@ def verify_launcher(resources, manifest, archive_names, dump_xmltree):
             raise ValueError(f"Compiled {name} resource is missing")
         return entries[name]
 
-    launcher_id, launcher_variants = entry("mipmap/ic_launcher")
-    foreground_id, foreground_variants = entry("drawable/ic_launcher_foreground")
-    monochrome_id, monochrome_variants = entry("drawable/ic_launcher_monochrome")
-    background_id, _ = entry("color/ic_launcher_background")
+    suffix = "_offlinetest" if sidecar else ""
+    launcher_name = f"mipmap/ic_launcher{suffix}"
+    foreground_name = ("drawable/ic_offlinetest_launcher_foreground" if sidecar
+                       else "drawable/ic_launcher_foreground")
+    monochrome_name = ("drawable/ic_offlinetest_launcher_monochrome" if sidecar
+                       else "drawable/ic_launcher_monochrome")
+    background_name = ("color/ic_offlinetest_launcher_background" if sidecar
+                       else "color/ic_launcher_background")
+    launcher_id, launcher_variants = entry(launcher_name)
+    foreground_id, foreground_variants = entry(foreground_name)
+    monochrome_id, monochrome_variants = entry(monochrome_name)
+    background_id, _ = entry(background_name)
 
     for attribute in ("icon", "roundIcon"):
         if re.search(rf":{attribute}\(0x[0-9a-fA-F]+\)=@{re.escape(launcher_id)}\b", manifest) is None:
-            raise ValueError(f"Packaged application {attribute} does not reference mipmap/ic_launcher")
+            raise ValueError(f"Packaged application {attribute} does not reference {launcher_name}")
     if "android.intent.action.MAIN" not in manifest or "android.intent.category.LAUNCHER" not in manifest:
         raise ValueError("Packaged manifest has no launcher activity")
+    alias_at = manifest.find("PaymentLinkActivity")
+    if alias_at < 0:
+        raise ValueError("Packaged manifest has no payment-link activity alias")
+    alias_header = manifest[alias_at:manifest.find("E: intent-filter", alias_at)]
+    wanted = "false" if sidecar else "true"
+    if re.search(rf":enabled\(0x[0-9a-fA-F]+\)={wanted}\b", alias_header) is None:
+        raise ValueError("Payment-link alias has the wrong enabled state")
 
     def packaged(name, variants, variant):
         path = variants.get(variant)

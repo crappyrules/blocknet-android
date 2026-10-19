@@ -371,16 +371,26 @@ public final class WalletRepository {
     }
     private void openWallet(String name,String route,JSONObject body) throws Exception {
         String file=filename(name);
-        makeRoom();
+        boolean foregroundSelection=MobileCorePolicy.permitted(context);
+        if(!route.equals("/api/wallet/load"))BootstrapSyncState.begin(context,network(),file);
         // Persist before the side effect: response loss or process death must not expose a
         // loaded wallet under the previous filename, particularly during backup export.
         if(!runtime.prefs.edit().putString(walletChangeKey(),file).commit())throw new IOException("Could not safely record wallet selection");
         try {
+            makeRoom();
             JSONObject opened=api.post(route,body);
             if(!file.equals(opened.getString("filename")))throw new IOException("The core opened an unexpected wallet file");
             activate(file);
             if(!runtime.prefs.edit().remove(walletChangeKey()).commit())throw new IOException("Could not confirm wallet selection");
             authorizeCache(file,body.getString("password"));
+            if(!MobileCorePolicy.permitted(context))lock();
+            if(foregroundSelection&&runtime.syncRequested()) {
+                // This is the only live-wallet event allowed to reset bootstrap progress.
+                runtime.noteWalletSelected(network(),file,
+                    BootstrapWakeLease.identityForAddress(opened.getString("address")));
+                try { context.startService(new Intent(context,CoreService.class).setAction(CoreService.RECHECK)); }
+                catch(RuntimeException unavailable) { /* The service monitor observes the event. */ }
+            }
         }catch(Exception failure){
             // The durable marker stays until a successful, explicit reopen reconciles it.
             try{stopNode();}catch(Exception stopFailure){failure.addSuppressed(stopFailure);}
@@ -429,6 +439,11 @@ public final class WalletRepository {
         catch (WalletApi.ApiException e) {
             if (e.status != 503) throw e;
             api.post("/api/wallet/load", new JSONObject().put("password",password).put("filepath",activeWallet()));
+        }
+        if(!MobileCorePolicy.permitted(context)||!runtime.syncRequested()||!SyncNetworkPolicy.read(context).allowed){
+            try { lock(); }
+            catch(Exception failedLock){runtime.signalNetworkPause();try{runtime.stop();}catch(Exception ignored){}}
+            throw new IOException("Wallet went to background while unlocking. Open it and unlock again.");
         }
         authorizeCache(activeWallet(),password);
     }
@@ -579,6 +594,7 @@ public final class WalletRepository {
     public synchronized void importBackup(InputStream source,String name) throws Exception {
         String filename = filename(name); File target = new File(runtime.walletsDir(),filename);
         if (target.exists()) throw new IOException("A wallet with this name already exists");
+        BootstrapSyncState.begin(context,network(),filename);
         File temp = new File(runtime.walletsDir(),filename+".import");
         try {
             try (FileOutputStream out = new FileOutputStream(temp)) { copyBounded(source,out,64*1024*1024); out.getFD().sync(); }

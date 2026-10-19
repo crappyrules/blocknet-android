@@ -95,7 +95,9 @@ public final class TransactionNotifier {
         Map<String,?> all=store().getAll();if(!all.containsKey(scope)&&all.size()>=MAX_SCOPES){String oldest=null;long oldestAt=Long.MAX_VALUE;for(Map.Entry<String,?> item:all.entrySet()){long at=0;try{at=new JSONObject(String.valueOf(item.getValue())).optLong("updated");}catch(Exception ignored){}if(at<oldestAt){oldestAt=at;oldest=item.getKey();}}if(oldest!=null)edit.remove(oldest);}
         if(!edit.commit())throw new IOException("Could not save transaction alert state");
     }
-    private JSONObject get(String path)throws Exception {return api.request("GET",path,null,null,3000);}
+    private boolean pollAllowed(){return runtime.syncRequested()&&SyncNetworkPolicy.read(context).allowed&&
+        (!MobileCorePolicy.enabled(context)||MobileCorePolicy.permitted(context));}
+    private JSONObject get(String path)throws Exception {if(!pollAllowed())throw new IOException("Wallet alert poll paused");return api.request("GET",path,null,null,3000);}
     private JSONArray page(String path,String array)throws Exception {
         JSONArray result=new JSONArray();int offset=0;
         while(offset<MAX_RECORDS){JSONObject response=get(path+"?limit="+PAGE+"&order=desc&offset="+offset);JSONArray rows=response.getJSONArray(array);int total=response.getInt("total");if(total<0||rows.length()>PAGE||response.getInt("count")!=rows.length()||response.getInt("offset")!=offset||response.getInt("limit")!=PAGE||(rows.length()==0&&offset<total))throw new IOException("Invalid wallet activity page");for(int i=0;i<rows.length();i++)result.put(rows.getJSONObject(i));offset+=rows.length();if(rows.length()<PAGE||offset>=total)break;}
@@ -125,7 +127,7 @@ public final class TransactionNotifier {
         catch(Exception unavailable){/* No unlocked valid observation: retain durable baseline, never log wallet data. */}
     }
     private void pollEnabled() throws Exception {
-            if(!runtime.alive())return;long generation=runtime.generation();String network=runtime.network(),wallet=runtime.prefs.getString("active."+network,"main.wallet.dat");
+            if(!pollAllowed()||!runtime.alive())return;long generation=runtime.generation();String network=runtime.network(),wallet=runtime.prefs.getString("active."+network,"main.wallet.dat");
             if(runtime.prefs.contains("wallet-change."+network))return;
             JSONObject status=get("/api/status");if(status.optBoolean("syncing"))return;
             JSONArray sends,outputs;
@@ -143,10 +145,10 @@ public final class TransactionNotifier {
             List<Event> events=new ArrayList<>();
             for(int i=0;i<sends.length();i++){JSONObject row=sends.getJSONObject(i);events.add(new Event(txid(row),-1,false,amount(row,"total_amount")));}
             for(int i=0;i<outputs.length();i++){JSONObject row=outputs.getJSONObject(i);int index=row.getInt("output_index");if(index<0)throw new IOException("Invalid wallet output index");events.add(new Event(txid(row),index,true,amount(row,"amount")));}
-            if(!runtime.alive()||generation!=runtime.generation()||!network.equals(runtime.network())||!wallet.equals(runtime.prefs.getString("active."+network,"main.wallet.dat"))||runtime.prefs.contains("wallet-change."+network))return;
+            if(!pollAllowed()||!runtime.alive()||generation!=runtime.generation()||!network.equals(runtime.network())||!wallet.equals(runtime.prefs.getString("active."+network,"main.wallet.dat"))||runtime.prefs.contains("wallet-change."+network))return;
             String scope=scope(network,wallet);
             synchronized(LOCK){
-                if(!enabled(context))return;
+                if(!enabled(context)||!pollAllowed())return;
                 Seen seen=read(scope);List<Event> fresh=observe(seen,events);save(scope,seen);publish(scope,fresh);
             }
     }

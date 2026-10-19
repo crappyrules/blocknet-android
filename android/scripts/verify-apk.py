@@ -17,6 +17,7 @@ parser.add_argument('apk', nargs='?', default='app/build/outputs/apk/debug/app-d
 parser.add_argument('--core-mobile-dir', required=True, help='Absolute reviewed mobile Core build directory')
 parser.add_argument('--offline-wallet-view-dir', required=True, help='Absolute pinned offline wallet reader build directory')
 parser.add_argument('--aapt2', help='Path to Android SDK aapt2 for compiled manifest/resource verification')
+parser.add_argument('--bootstrap-qa', action='store_true', help='Require the isolated controlled-peer QA Core and OFFLINETEST package')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 apk = Path(args.apk)
@@ -64,8 +65,12 @@ def verified_mobile_inputs(directory):
     required += [patches / '0004-mobile-client-policy.patch', directory / 'mobile-client-policy.patch']
     for name in ('0005-core-wallet-persistence.patch', '0006-core-wallet-scan-serialization.patch',
                  '0007-core-wallet-send-readiness.patch', '0008-core-wallet-send-reorg-activity.patch',
-                 '0009-core-wallet-notification-overflow.patch'):
+                 '0009-core-wallet-notification-overflow.patch', '0010-bootstrap-progress.patch',
+                 '0011-fetched-block-wallet-scan.patch'):
         required += [patches / name, directory / name]
+    qa_patch = root / 'qa/controlled-peer.patch'
+    if args.bootstrap_qa:
+        required += [qa_patch, directory / 'controlled-peer.patch', directory / 'reviewed-build-provenance.json']
     require(all(path.is_file() for path in required), 'Experimental Core build is missing its binary, provenance, lockfile or reviewed patch copies')
     provenance_bytes = provenance_file.read_bytes()
     try:
@@ -87,7 +92,12 @@ def verified_mobile_inputs(directory):
                      'wallet_scan_patch_sha256': patches / '0006-core-wallet-scan-serialization.patch',
                      'wallet_send_readiness_patch_sha256': patches / '0007-core-wallet-send-readiness.patch',
                      'wallet_followup_patch_sha256': patches / '0008-core-wallet-send-reorg-activity.patch',
-                     'wallet_notification_overflow_patch_sha256': patches / '0009-core-wallet-notification-overflow.patch'})
+                     'wallet_notification_overflow_patch_sha256': patches / '0009-core-wallet-notification-overflow.patch',
+                     'bootstrap_progress_patch_sha256': patches / '0010-bootstrap-progress.patch',
+                     'fetched_block_wallet_scan_patch_sha256': patches / '0011-fetched-block-wallet-scan.patch'})
+    if args.bootstrap_qa:
+        expected.update({'qa_peer_only_patch_sha256': qa_patch,
+                         'reviewed_base_provenance_sha256': directory / 'reviewed-build-provenance.json'})
     for key, path in expected.items():
         recorded = provenance.get(key)
         require(isinstance(recorded, str) and re.fullmatch('[0-9a-f]{64}', recorded) is not None and
@@ -97,16 +107,28 @@ def verified_mobile_inputs(directory):
             hashlib.sha256((directory / 'android-cgo-link-flags.patch').read_bytes()).hexdigest() == provenance['android_link_shim_sha256'] and
             hashlib.sha256((directory / 'onchain-announcement-scan.patch').read_bytes()).hexdigest() == provenance['announcement_scan_patch_sha256'],
             'Experimental build patch copies differ from the reviewed source patches')
+    normal_order = ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', '0005-core-wallet-persistence.patch', '0006-core-wallet-scan-serialization.patch', '0007-core-wallet-send-readiness.patch', '0008-core-wallet-send-reorg-activity.patch', '0009-core-wallet-notification-overflow.patch', '0010-bootstrap-progress.patch', '0011-fetched-block-wallet-scan.patch']
     require(provenance.get('mobile_client_capability') == 1 and
-                provenance.get('patch_order') == ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', '0005-core-wallet-persistence.patch', '0006-core-wallet-scan-serialization.patch', '0007-core-wallet-send-readiness.patch', '0008-core-wallet-send-reorg-activity.patch', '0009-core-wallet-notification-overflow.patch'] and
+                provenance.get('patch_order') == (normal_order + ['qa/controlled-peer.patch'] if args.bootstrap_qa else normal_order) and
                 hashlib.sha256((directory / 'mobile-client-policy.patch').read_bytes()).hexdigest() == provenance['mobile_client_patch_sha256'] and
                 all(hashlib.sha256((directory / name).read_bytes()).hexdigest() == provenance[field]
                     for name, field in [('0005-core-wallet-persistence.patch', 'wallet_persistence_patch_sha256'),
                                         ('0006-core-wallet-scan-serialization.patch', 'wallet_scan_patch_sha256'),
                                         ('0007-core-wallet-send-readiness.patch', 'wallet_send_readiness_patch_sha256'),
                                         ('0008-core-wallet-send-reorg-activity.patch', 'wallet_followup_patch_sha256'),
-                                        ('0009-core-wallet-notification-overflow.patch', 'wallet_notification_overflow_patch_sha256')]),
+                                        ('0009-core-wallet-notification-overflow.patch', 'wallet_notification_overflow_patch_sha256'),
+                                        ('0010-bootstrap-progress.patch', 'bootstrap_progress_patch_sha256'),
+                                        ('0011-fetched-block-wallet-scan.patch', 'fetched_block_wallet_scan_patch_sha256')]),
             'Mobile Core capability or ordered patch provenance is invalid')
+    if args.bootstrap_qa:
+        base = json.loads((directory / 'reviewed-build-provenance.json').read_bytes())
+        require(provenance.get('qa_only') is True and provenance.get('qa_peer_only_capability') == 1 and
+                provenance.get('base_binary_sha256') == base.get('binary_sha256') and
+                hashlib.sha256((directory / 'controlled-peer.patch').read_bytes()).hexdigest() == provenance.get('qa_peer_only_patch_sha256'),
+                'Controlled-peer QA Core provenance is invalid')
+    else:
+        require(provenance.get('qa_only') is not True and provenance.get('qa_peer_only_patch_sha256') is None,
+                'Normal APK unexpectedly contains controlled-peer QA Core')
     return binary_file.read_bytes(), provenance_bytes
 
 selected_dir = Path(args.core_mobile_dir)
@@ -207,9 +229,18 @@ with zipfile.ZipFile(apk) as archive:
 aapt2 = find_aapt2()
 resources = dump('resources', str(apk))
 manifest = dump('xmltree', str(apk), '--file', 'AndroidManifest.xml')
+badging = dump('badging', str(apk))
+sidecar = "package: name='com.blocknet.wallet.offlinetest'" in badging
+if args.bootstrap_qa:
+    require(sidecar, 'Controlled-peer QA Core may only be packaged in OFFLINETEST')
+require(sidecar or "package: name='com.blocknet.wallet'" in badging,
+        'APK has an unexpected application ID')
+expected_label = 'Blocknet OFFLINETEST' if sidecar else 'Blocknet Wallet'
+require(f"application-label:'{expected_label}'" in badging,
+        'APK launcher label does not match its application ID')
 try:
     verify_launcher(resources, manifest, archive_names,
-                    lambda path: dump('xmltree', str(apk), '--file', path))
+                    lambda path: dump('xmltree', str(apk), '--file', path), sidecar=sidecar)
 except ValueError as error:
     require(False, str(error))
 print('PASS adaptive launcher: packaged foreground/monochrome artwork and manifest icon/roundIcon mappings')

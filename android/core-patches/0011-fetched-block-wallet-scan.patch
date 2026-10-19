@@ -1,0 +1,165 @@
+diff --git a/daemon.go b/daemon.go
+index 0885881..d600de2 100644
+--- a/daemon.go
++++ b/daemon.go
+@@ -464,13 +464,6 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
+ 			}
+ 			return block.Hash(), nil
+ 		},
+-		OnBlockAccepted: func(data []byte) {
+-			d.miner.NotifyNewBlock()
+-			var block Block
+-			if err := json.Unmarshal(data, &block); err == nil {
+-				d.notifyBlock(&block)
+-			}
+-		},
+ 	}
+ 	d.syncMgr = p2p.NewSyncManager(node, syncCfg)
+ 
+@@ -947,6 +940,8 @@ func (d *Daemon) processBlockData(data []byte) error {
+ 	d.mu.Unlock()
+ 
+ 	writeCheckpoint(cp)
++	d.notifyBlock(&block)
++	d.miner.NotifyNewBlock()
+ 	return nil
+ }
+ 
+diff --git a/daemon_sync_wallet_notification_test.go b/daemon_sync_wallet_notification_test.go
+new file mode 100644
+index 0000000..4436a1b
+--- /dev/null
++++ b/daemon_sync_wallet_notification_test.go
+@@ -0,0 +1,124 @@
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"blocknet/protocol/params"
++	"blocknet/wallet"
++)
++
++// Fetched sync blocks must wake the loaded wallet scanner exactly once each.
++// The two static blocks were mined on disposable testnet data and are validated
++// by the normal ProcessBlock path; no network or funded wallet is involved.
++func TestFetchedSyncBlocksAdvanceWalletAndPersistOnStop(t *testing.T) {
++	params.InitTestnet()
++	encoded, err := os.ReadFile("testdata/sync_wallet_fixture_testnet.json")
++	if err != nil {
++		t.Fatal(err)
++	}
++	var blocks []*Block
++	if err := json.Unmarshal(encoded, &blocks); err != nil || len(blocks) != 2 {
++		t.Fatalf("invalid two-block testnet fixture: %v", err)
++	}
++	d, err := NewDaemon(DaemonConfig{DataDir: t.TempDir(), MobileClient: true,
++		AllowOfflineStart: true, FullSync: true}, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer func() { _ = d.Stop() }()
++	genesis := d.Chain().GetBlockByHeight(0)
++	if genesis == nil {
++		t.Fatal("testnet genesis is unavailable")
++	}
++	path := filepath.Join(t.TempDir(), "disposable.wallet")
++	w, err := wallet.NewWallet(path, []byte("synthetic-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	w.SetSyncedTip(0, genesis.Hash())
++	if err := w.Save(); err != nil {
++		t.Fatal(err)
++	}
++	observed := d.SubscribeWalletBlocks()
++	defer d.UnsubscribeWalletBlocks(observed)
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	c := &CLI{ctx: ctx, cancel: cancel, daemon: d, wallet: w,
++		scanner: wallet.NewScanner(w, defaultScannerConfig())}
++	done := make(chan struct{})
++	go func() { c.autoScanBlocks(); close(done) }()
++	deadline := time.Now().Add(10 * time.Second)
++	for {
++		d.blockSubsMu.Lock()
++		subscribers := len(d.walletBlockSubs)
++		d.blockSubsMu.Unlock()
++		if subscribers == 2 {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("wallet scanner did not subscribe")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	for _, block := range blocks {
++		data, err := json.Marshal(block)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if err := d.processBlockData(data); err != nil {
++			t.Fatalf("fetched block was rejected: %v", err)
++		}
++	}
++	if d.Chain().Height() != 2 {
++		t.Fatalf("chain height=%d, want 2", d.Chain().Height())
++	}
++	if len(observed) != 2 {
++		t.Fatalf("wallet subscriber received %d fetched blocks, want 2", len(observed))
++	}
++	for want := uint64(1); want <= 2; want++ {
++		if got := (<-observed).Header.Height; got != want {
++			t.Fatalf("wallet notification height=%d, want %d", got, want)
++		}
++	}
++	duplicate, err := json.Marshal(blocks[0])
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := d.processBlockData(duplicate); !errors.Is(err, ErrDuplicateBlock) {
++		t.Fatalf("duplicate block error=%v, want ErrDuplicateBlock", err)
++	}
++	if err := d.processBlockData([]byte("{}")); err == nil {
++		t.Fatal("invalid block was accepted")
++	}
++	if len(observed) != 0 {
++		t.Fatal("duplicate or invalid block notified the wallet")
++	}
++	for w.SyncedHeight() != 2 || w.SyncedHash() != blocks[1].Hash() {
++		if time.Now().After(deadline) {
++			t.Fatalf("wallet scan remained at height %d", w.SyncedHeight())
++		}
++		time.Sleep(time.Millisecond)
++	}
++	if _, _, ready := walletScanTip(d.Chain(), w); !ready {
++		t.Fatal("wallet scan did not reach the canonical tip")
++	}
++	cancel()
++	select {
++	case <-done:
++	case <-time.After(10 * time.Second):
++		t.Fatal("wallet scanner did not stop")
++	}
++	reloaded, err := wallet.LoadWallet(path, []byte("synthetic-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if reloaded.SyncedHeight() != 2 || reloaded.SyncedHash() != blocks[1].Hash() {
++		t.Fatal("wallet scan tip was not durable after stop")
++	}
++}
+diff --git a/testdata/sync_wallet_fixture_testnet.json b/testdata/sync_wallet_fixture_testnet.json
+new file mode 100644
+index 0000000..79703af
+--- /dev/null
++++ b/testdata/sync_wallet_fixture_testnet.json
+@@ -0,0 +1 @@
++[{"header":{"Version":1,"Height":1,"PrevHash":[122,45,253,58,223,120,106,111,108,43,69,1,91,212,57,232,201,91,147,154,77,101,43,160,8,216,208,132,65,42,224,215],"MerkleRoot":[186,66,232,82,180,3,116,90,192,209,230,207,73,78,144,143,206,57,212,98,196,108,136,65,50,181,96,81,198,158,26,210],"Timestamp":1792377896,"Difficulty":4,"Nonce":1},"transactions":[{"version":1,"inputs":[],"outputs":[{"commitment":[172,76,111,249,28,13,251,53,254,70,100,129,101,137,54,3,201,173,35,46,111,70,243,138,215,171,174,197,171,42,237,84],"public_key":[74,118,198,107,216,153,34,17,152,230,19,92,147,247,72,181,185,158,126,243,242,137,121,27,31,95,96,185,139,208,113,23],"range_proof":"mrnQ2VWP4COKXMR67gjPMJ7Jk6tGyLxX8+6mgkwA723GX0Elpc23YS3T8ZgPzps6V+a+3iWRz+PcugNhm+nBe/QNUesxhtlx0vAqCwWZzEceeyYrs2S0TuW0x6nl8b4DkIJWY8au4O9S6oMGFM0P8cjbttuGdeMGpjLmK5G8LAOp6w7o5+tsOcHUp6hDg2cFMsJobCtoytGnTAMhgx6oB8fj9Otzm9Gubd5l4SnfItKuYgR8dS3tuGjnq1QdKXQMQIJCnu71A5fcNEloMBzz1OLEUpRNlzP5spvchbffeQC6sVvn7WtWCwPMLDk+3u/2s+RjW0srl5vFoWofShTOazSqKOFVa30tS4RtfDvdaffPIzIUpVTX3oLRytwdGn8c+oxHaH1g+oZ5Itkci20UjvbxgxhmvtYt2ewDNU/0SXwu0iHxYSEtm1bq3fLtZsyRBbi00FrAaDbvKi6fD0IPZyTkfuRfEl9YU5lF5oC/eSVZg7DTT5AbtGpUwKSMGMwGnNP1w/spBEDlBXgQh+/xYpwlo+zxv/M7vXCZCPnqxmOChaiRSC8+sgJZzJmeZySdrg5VJIsiNyeIjp/tyCLtFMBqm5OFhZx/LgLggvHLwR9i42JvPqS9rTcNo59k3HAm3pp4feEu+WKJ50ydmXh/BxWCrokCzmWa2em/znzzlFUSDoM4m3968iAYjKHjKTolPko39U2zVQoTOBDvRPO/KdSVkZ50QwCkRuX2cU/Jvey8dgBZEuRdSOSQoHmqETxdKPc61txnPhGn95akeXlhC7rxeVV+ENZcmDx5+P/MukmViDWeQA61xWJdutTsCvIMxBJ5qspush9mquknH8OiAfm+0GwG3K+u9OUJuUUe4NXNLNoqHctI/96UvOpQ54AN","encrypted_amount":[64,247,142,140,255,126,114,84],"encrypted_memo":[107,8,246,61,178,174,206,130,169,111,66,181,21,41,197,91,70,69,88,103,139,194,68,170,82,39,49,148,96,69,224,68,164,82,89,157,52,136,102,147,254,255,124,72,159,204,152,75,104,54,13,54,174,140,78,146,174,147,198,231,185,185,145,187,234,125,150,74,184,119,220,224,41,10,12,173,226,108,115,164,239,33,92,172,34,217,146,221,189,183,173,209,88,45,141,13,182,194,170,70,7,71,143,130,11,7,233,30,99,93,173,188,191,94,16,165,161,199,144,147,208,221,44,199,241,228,246,142]}],"fee":0,"tx_public_key":[6,154,212,9,238,128,255,126,67,152,120,11,1,124,60,243,15,226,97,54,150,74,187,68,58,34,70,238,141,189,129,73]}]},{"header":{"Version":1,"Height":2,"PrevHash":[76,168,218,250,76,176,219,213,172,67,0,206,183,109,192,82,198,189,52,171,16,102,121,182,147,201,46,9,240,98,118,11],"MerkleRoot":[170,192,151,93,34,110,57,152,225,28,220,12,141,60,186,27,158,224,155,105,106,71,33,15,106,58,60,93,21,9,243,19],"Timestamp":1792377901,"Difficulty":4,"Nonce":1},"transactions":[{"version":1,"inputs":[],"outputs":[{"commitment":[10,7,73,210,112,201,216,225,12,187,83,155,212,167,62,197,119,115,38,187,232,134,52,23,116,22,8,69,154,5,57,16],"public_key":[246,82,16,255,231,235,78,19,172,113,188,56,148,145,246,77,221,30,132,207,166,206,64,74,31,111,11,195,193,77,137,52],"range_proof":"tLfF/q6zL8UvLRiFz5uw5KX0+hZoHxc3YZFsHDlwE0KQgRAGj3KocGvTlMph5+udFUcJ0lnbNcqIH17Jj4tec3SWMhlyYPVNHYuLKY26R1ZhF5BVV/4tGKC9g9MDzERBhNod9V5XYa6hFAu/+uiz5LQHzULGExrppaYcgeThuzWV9tzPl3j8ckhi31gQ4takZ9qgMD4VBbQXRUDYIEGXBZOwdSmFOrfEdMRStu7Qw/HwVNlVgPN8RDKLOkYloD8G4t69wSQdnGkMlYgOhW3ugmlg8syH5RIdZqnMC/mosgmQdpZ3/bwnqxPIMJbe/7I6obvtnG8N4z9Se8h3w3QsGSomi2Qe43RTjrpvySBMzhkzkAg7HPqpfGLRZvs90XUrEAMV99vwyS2ZDQHPhZ5XiaqUzcG++WuvrO2cSuowZBjsJsFKLD3p5K4H8N2pWslE4Su5dVIN6OvOOiGHzCGYcp78JR5NRr3UmhIyXBZ2+pGjgvlJRogHXQFdGgq8ajNwkK1R+3NASuf5+tpMuGk1tXITtW/0ct2q+F1ba7/oa0e0ONgq4Zo58DHCbeZAhYanegOdrsg3haerEuNvUefDcdCc41NAO+ZkYSnPcQb1g+gmxI2WbxlUjFmszdmqbkgEEDyV2pVkTa7jG+XH2P45pdvPjriGrR5kPxmPKzh7TSbU2/D7Q0Zhe9RXj0Q9M+JzsWHOs+rszRFs5KfIQhAKNNKJTT+krXoVkY/55YIoTVhEKn2EBks8Zo4z40lP4PwUpmGaWMhIWw1dOp0yvC/ts81eErFJlIvKgit3fujClBFRimnZQ1jRJe+EsdMVmruHUTIPn+ZSWmGOADGseZycDYN9i/UCCJ0S+ZQe7MyyFXPe9jrtzyWiT/1A1FMqtEwK","encrypted_amount":[124,230,214,94,179,81,156,116],"encrypted_memo":[97,247,153,97,249,215,227,157,107,174,35,223,156,72,76,150,65,85,136,147,117,100,30,111,88,6,3,31,110,99,168,230,136,84,36,55,196,125,223,233,147,27,104,101,161,60,122,234,95,219,247,185,220,4,217,190,214,12,229,206,112,81,84,177,122,184,137,70,181,139,68,210,159,9,96,6,13,81,123,221,69,80,66,105,21,133,76,115,121,223,188,101,81,13,105,191,26,226,9,194,207,78,215,26,117,58,91,249,253,96,81,166,87,87,90,184,137,138,92,139,0,224,36,250,56,111,120,56]}],"fee":0,"tx_public_key":[230,159,151,118,109,38,142,80,245,55,170,160,116,51,56,145,80,166,91,0,115,139,148,104,73,240,228,220,92,54,6,63]}]}]
+\ No newline at end of file

@@ -1,0 +1,606 @@
+diff --git a/api_routes.go b/api_routes.go
+index 83b862f..0933893 100644
+--- a/api_routes.go
++++ b/api_routes.go
+@@ -40,6 +40,7 @@ func (s *APIServer) registerPrivateRoutes(mux *http.ServeMux) {
+ 	mux.HandleFunc("GET /api/wallet/send/advanced/status", s.handleSendAdvancedStatus)
+ 	mux.HandleFunc("POST /api/wallet/sign", s.handleSign)
+ 	mux.HandleFunc("POST /api/wallet/lock", s.handleLock)
++	mux.HandleFunc("GET /api/wallet/bootstrap", s.handleWalletBootstrap)
+ 	mux.HandleFunc("POST /api/wallet/unlock", s.handleUnlock)
+ 	mux.HandleFunc("POST /api/wallet/seed", s.handleSeed)
+ 	mux.HandleFunc("POST /api/wallet/sync", s.handleWalletSync)
+diff --git a/api_wallet_bootstrap.go b/api_wallet_bootstrap.go
+new file mode 100644
+index 0000000..923b205
+--- /dev/null
++++ b/api_wallet_bootstrap.go
+@@ -0,0 +1,38 @@
++package main
++
++import (
++	"crypto/sha256"
++	"fmt"
++	"net/http"
++)
++
++// handleWalletBootstrap returns only the authenticated progress needed by the
++// Android foreground service. It works while API-locked and never returns
++// wallet records, balances, addresses, or keys.
++func (s *APIServer) handleWalletBootstrap(w http.ResponseWriter, r *http.Request) {
++	syncing := s.daemon.syncMgr != nil && s.daemon.syncMgr.IsSyncing()
++	s.mu.RLock()
++	loaded := s.wallet
++	s.mu.RUnlock()
++	if loaded == nil {
++		writeJSON(w, http.StatusOK, map[string]any{
++			"version": 1, "wallet_loaded": false,
++			"peer_tip_confirmed": s.daemon.PeerTipConfirmed(),
++			"syncing":            syncing,
++		})
++		return
++	}
++	chainHeight, chainHash, scanReady := walletScanTip(s.daemon.Chain(), loaded)
++	identity := sha256.Sum256([]byte("blocknet-wallet-activity-v1\x00" + loaded.Address()))
++	writeJSON(w, http.StatusOK, map[string]any{
++		"version":            1,
++		"wallet_loaded":      true,
++		"wallet_id":          fmt.Sprintf("%x", identity),
++		"chain_height":       chainHeight,
++		"chain_hash":         fmt.Sprintf("%x", chainHash),
++		"synced_height":      loaded.SyncedHeight(),
++		"wallet_scan_ready":  scanReady,
++		"peer_tip_confirmed": s.daemon.PeerTipConfirmed(),
++		"syncing":            syncing,
++	})
++}
+diff --git a/api_wallet_bootstrap_test.go b/api_wallet_bootstrap_test.go
+new file mode 100644
+index 0000000..b317ab9
+--- /dev/null
++++ b/api_wallet_bootstrap_test.go
+@@ -0,0 +1,76 @@
++package main
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"path/filepath"
++	"testing"
++
++	"blocknet/wallet"
++)
++
++func TestWalletBootstrapLockedProgressIsNarrowAndExact(t *testing.T) {
++	chain, _, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	daemon, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	loaded, err := wallet.NewWallet(filepath.Join(t.TempDir(), "bootstrap.wallet.dat"),
++		[]byte("synthetic-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	api := NewAPIServer(daemon, loaded, nil, t.TempDir(), nil)
++	private := http.NewServeMux()
++	api.registerPrivateRoutes(private)
++	authorized := authMiddleware("synthetic-token", private)
++	request := func(handler http.Handler, token string) *httptest.ResponseRecorder {
++		req := httptest.NewRequest("GET", "/api/wallet/bootstrap", nil)
++		if token != "" {
++			req.Header.Set("Authorization", "Bearer "+token)
++		}
++		res := httptest.NewRecorder()
++		handler.ServeHTTP(res, req)
++		return res
++	}
++	if got := request(authorized, "").Code; got != 401 {
++		t.Fatalf("without auth=%d", got)
++	}
++	public := http.NewServeMux()
++	api.registerPublicRoutes(public)
++	if got := request(public, "").Code; got != 404 {
++		t.Fatalf("public route=%d", got)
++	}
++	api.locked = true
++	res := request(authorized, "synthetic-token")
++	if res.Code != 200 {
++		t.Fatalf("locked progress=%d", res.Code)
++	}
++	var progress map[string]any
++	if err := json.Unmarshal(res.Body.Bytes(), &progress); err != nil {
++		t.Fatal(err)
++	}
++	for key := range progress {
++		switch key {
++		case "version", "wallet_loaded", "wallet_id", "chain_height", "chain_hash", "synced_height",
++			"wallet_scan_ready", "peer_tip_confirmed", "syncing":
++		default:
++			t.Fatalf("unexpected private field %s", key)
++		}
++	}
++	if progress["wallet_loaded"] != true || progress["peer_tip_confirmed"] != false {
++		t.Fatalf("unexpected bootstrap result: %v", progress)
++	}
++	api.wallet = nil
++	res = request(authorized, "synthetic-token")
++	if res.Code != 200 {
++		t.Fatalf("unloaded progress=%d", res.Code)
++	}
++	progress = nil
++	if err := json.Unmarshal(res.Body.Bytes(), &progress); err != nil {
++		t.Fatal(err)
++	}
++	if progress["wallet_loaded"] != false || progress["wallet_id"] != nil {
++		t.Fatal("unloaded response exposed wallet identity")
++	}
++}
+diff --git a/bootstrap_shutdown_proof.go b/bootstrap_shutdown_proof.go
+new file mode 100644
+index 0000000..61cd43c
+--- /dev/null
++++ b/bootstrap_shutdown_proof.go
+@@ -0,0 +1,78 @@
++package main
++
++import (
++	"crypto/sha256"
++	"encoding/json"
++	"fmt"
++	"os"
++	"path/filepath"
++	"regexp"
++
++	"blocknet/wallet"
++)
++
++// The proof is only a local, nonce-bound shutdown receipt. It contains no
++// wallet records or secrets and is never served by the API.
++type bootstrapShutdownProof struct {
++	Version     int    `json:"version"`
++	Nonce       string `json:"nonce"`
++	WalletID    string `json:"wallet_id"`
++	ChainHeight uint64 `json:"chain_height"`
++	ChainHash   string `json:"chain_hash"`
++}
++
++var proofNoncePattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
++
++func shutdownProofForTip(nonce string, w *wallet.Wallet, chain *Chain) (bootstrapShutdownProof, error) {
++	if !proofNoncePattern.MatchString(nonce) || w == nil || chain == nil {
++		return bootstrapShutdownProof{}, fmt.Errorf("invalid bootstrap shutdown proof request")
++	}
++	height, hash, ready := walletScanTip(chain, w)
++	if !ready {
++		return bootstrapShutdownProof{}, fmt.Errorf("wallet is not at the final canonical tip")
++	}
++	id := sha256.Sum256([]byte("blocknet-wallet-activity-v1\x00" + w.Address()))
++	return bootstrapShutdownProof{1, nonce, fmt.Sprintf("%x", id), height, fmt.Sprintf("%x", hash)}, nil
++}
++
++func writeBootstrapShutdownProof(path, nonce string, w *wallet.Wallet, chain *Chain, peerConfirmed bool) error {
++	if path == "" && nonce == "" {
++		return nil // Desktop and older Android callers do not request a proof.
++	}
++	if path == "" || filepath.Base(path) != "bootstrap-shutdown-proof.json" {
++		return fmt.Errorf("invalid bootstrap proof path")
++	}
++	if !peerConfirmed {
++		return fmt.Errorf("peer tip was not confirmed before shutdown")
++	}
++	proof, err := shutdownProofForTip(nonce, w, chain)
++	if err != nil {
++		return err
++	}
++	parent := filepath.Dir(path)
++	tmp, err := os.CreateTemp(parent, ".bootstrap-proof-*")
++	if err != nil {
++		return err
++	}
++	defer os.Remove(tmp.Name())
++	if err = tmp.Chmod(0600); err == nil {
++		err = json.NewEncoder(tmp).Encode(proof)
++	}
++	if err == nil {
++		err = tmp.Sync()
++	}
++	if closeErr := tmp.Close(); err == nil {
++		err = closeErr
++	}
++	if err != nil {
++		return err
++	}
++	if err = os.Rename(tmp.Name(), path); err != nil {
++		return err
++	}
++	if dir, openErr := os.Open(parent); openErr == nil {
++		_ = dir.Sync()
++		_ = dir.Close()
++	}
++	return nil
++}
+diff --git a/bootstrap_shutdown_proof_test.go b/bootstrap_shutdown_proof_test.go
+new file mode 100644
+index 0000000..0359759
+--- /dev/null
++++ b/bootstrap_shutdown_proof_test.go
+@@ -0,0 +1,51 @@
++package main
++
++import (
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"blocknet/wallet"
++)
++
++func TestShutdownReceiptRequiresFinalWalletTipAndNonce(t *testing.T) {
++	w, err := wallet.NewWallet(filepath.Join(t.TempDir(), "wallet.dat"), []byte("disposable-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	chain := &Chain{}
++	hash := [32]byte{0x42}
++	chain.tipSnap.Store(&tipSnapshot{height: 7, bestHash: hash})
++	w.SetSyncedTip(7, hash)
++	path := filepath.Join(t.TempDir(), "bootstrap-shutdown-proof.json")
++	nonce := "0123456789abcdef0123456789abcdef"
++	if err := writeBootstrapShutdownProof(path, nonce, w, chain, true); err != nil {
++		t.Fatal(err)
++	}
++	data, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var receipt bootstrapShutdownProof
++	if err := json.Unmarshal(data, &receipt); err != nil {
++		t.Fatal(err)
++	}
++	if receipt.Version != 1 || receipt.Nonce != nonce || receipt.ChainHeight != 7 ||
++		receipt.ChainHash != "4200000000000000000000000000000000000000000000000000000000000000" || len(receipt.WalletID) != 64 {
++		t.Fatal("receipt did not bind to the final wallet and chain tip")
++	}
++	if stat, err := os.Stat(path); err != nil || stat.Mode().Perm() != 0600 {
++		t.Fatal("receipt is not private")
++	}
++	chain.tipSnap.Store(&tipSnapshot{height: 7, bestHash: [32]byte{0x43}})
++	if _, err := shutdownProofForTip(nonce, w, chain); err == nil {
++		t.Fatal("same-height reorg produced a receipt")
++	}
++	if _, err := shutdownProofForTip("wrong", w, chain); err == nil {
++		t.Fatal("invalid nonce produced a receipt")
++	}
++	if err := writeBootstrapShutdownProof(path, nonce, w, chain, false); err == nil {
++		t.Fatal("unconfirmed peer produced a receipt")
++	}
++}
+diff --git a/cli.go b/cli.go
+index 86192d7..1eaa04e 100644
+--- a/cli.go
++++ b/cli.go
+@@ -312,17 +312,26 @@ func (c *CLI) shutdown() error {
+ 	c.mu.RLock()
+ 	w := c.wallet
+ 	c.mu.RUnlock()
++	walletSaved := w != nil
+ 	if w != nil {
+ 		fmt.Println("  Saving wallet...")
+ 		if err := w.Save(); err != nil {
++			walletSaved = false
+ 			fmt.Printf("  Warning: failed to save wallet: %v\n", err)
+ 		}
+ 	}
+ 
++	peerConfirmed := c.daemon.PeerTipConfirmed() && c.daemon.syncMgr != nil && !c.daemon.syncMgr.IsSyncing()
+ 	fmt.Println("  Stopping daemon...")
+ 	if err := c.daemon.Stop(); err != nil {
+ 		return fmt.Errorf("failed to stop daemon: %w", err)
+ 	}
++	if walletSaved {
++		if err := writeBootstrapShutdownProof(os.Getenv("BLOCKNET_BOOTSTRAP_PROOF_PATH"),
++			os.Getenv("BLOCKNET_BOOTSTRAP_PROOF_NONCE"), w, c.daemon.Chain(), peerConfirmed); err != nil {
++			fmt.Printf("  Bootstrap proof unavailable: %v\n", err)
++		}
++	}
+ 
+ 	fmt.Println("  Done")
+ 	return nil
+diff --git a/daemon.go b/daemon.go
+index 31c1bc7..0885881 100644
+--- a/daemon.go
++++ b/daemon.go
+@@ -655,6 +655,10 @@ func (d *Daemon) Stop() error {
+ 		return err
+ 	}
+ 
++	// Drain every block writer before closing storage. Sync cancellation alone
++	// does not join workers that may already be processing a block.
++	d.mu.Lock()
++	defer d.mu.Unlock()
+ 	// Close chain storage
+ 	if err := d.chain.Close(); err != nil {
+ 		return err
+@@ -1287,6 +1291,11 @@ func (d *Daemon) Node() *p2p.Node   { return d.node }
+ func (d *Daemon) Miner() *Miner     { return d.miner }
+ func (d *Daemon) TriggerSync()      { d.syncMgr.TriggerSync() }
+ 
++// PeerTipConfirmed reports a recent successful consensus-work comparison.
++func (d *Daemon) PeerTipConfirmed() bool {
++	return d != nil && d.syncMgr != nil && d.syncMgr.PeerTipConfirmed(90*time.Second)
++}
++
+ // IsMining returns whether the miner is running
+ func (d *Daemon) IsMining() bool {
+ 	return d.miner.IsRunning()
+diff --git a/p2p/bootstrap_tip_test.go b/p2p/bootstrap_tip_test.go
+new file mode 100644
+index 0000000..1f3e207
+--- /dev/null
++++ b/p2p/bootstrap_tip_test.go
+@@ -0,0 +1,94 @@
++package p2p
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"blocknet/protocol/params"
++	"github.com/libp2p/go-libp2p/core/peer"
++)
++
++// Exercise the actual Status exchange on an outbound-established mobile
++// connection. A local non-syncing flag alone must never confirm the tip.
++func TestPeerTipConfirmationUsesRealStatusExchange(t *testing.T) {
++	mobileConfig := DefaultNodeConfig()
++	mobileConfig.MobileClient = true
++	mobileConfig.AllowOfflineStart = true
++	mobileConfig.SeedNodes = nil
++	mobile, err := NewNode(mobileConfig)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer func() { _ = mobile.Stop() }()
++	desktop := mustNewTestNode(t)
++	defer func() { _ = desktop.Stop() }()
++	mustConnectNodes(t, mobile, desktop)
++
++	local := ChainStatus{Height: 12, TotalWork: 20,
++		NetworkID: params.NetworkID, ChainID: params.ChainID}
++	remote := local
++	server := NewSyncManager(desktop, SyncConfig{GetStatus: func() ChainStatus { return remote }})
++	server.ctx = context.Background()
++	desktop.host.SetStreamHandler(protocolID(params.ProtocolSync), server.HandleStream)
++	client := NewSyncManager(mobile, SyncConfig{GetStatus: func() ChainStatus { return local }})
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	client.ctx = ctx
++	if client.PeerTipConfirmed(90 * time.Second) {
++		t.Fatal("non-syncing without a status exchange confirmed tip")
++	}
++	client.checkSync()
++	if !client.PeerTipConfirmed(90 * time.Second) {
++		t.Fatal("equal-work Status reply from connected peer did not confirm tip")
++	}
++	client.requestSyncCheck()
++	if client.PeerTipConfirmed(90 * time.Second) {
++		t.Fatal("queued recheck retained stale peer evidence during debounce")
++	}
++	client.checkSync()
++	if !client.PeerTipConfirmed(90 * time.Second) {
++		t.Fatal("fresh equal-work exchange did not restore confirmation")
++	}
++	local.TotalWork = 19
++	if client.PeerTipConfirmed(90 * time.Second) {
++		t.Fatal("local work fell behind checked peer")
++	}
++	local.TotalWork = 20
++	remote.NetworkID = "wrong-network"
++	client.checkSync()
++	if client.PeerTipConfirmed(90 * time.Second) {
++		t.Fatal("rejected network Status preserved old tip confirmation")
++	}
++}
++
++func TestPeerTipEvidenceRequiresFreshConnectedWorkComparison(t *testing.T) {
++	now := time.Now()
++	peerA, peerB := peer.ID("a"), peer.ID("b")
++	check := func(at time.Time, checked, connected []peer.ID, peerWork, localWork uint64,
++		syncing bool) bool {
++		return peerTipEvidenceValid(at, checked, connected, peerWork, localWork,
++			syncing, 90*time.Second, now)
++	}
++	if !check(now, []peer.ID{peerA}, []peer.ID{peerA}, 10, 10, false) {
++		t.Fatal("fresh equal-work comparison must confirm tip")
++	}
++	for _, tc := range []struct {
++		name                string
++		at                  time.Time
++		checked, connected  []peer.ID
++		peerWork, localWork uint64
++		syncing             bool
++	}{
++		{"never checked", time.Time{}, nil, []peer.ID{peerA}, 0, 10, false},
++		{"stale", now.Add(-91 * time.Second), []peer.ID{peerA}, []peer.ID{peerA}, 10, 10, false},
++		{"disconnected", now, []peer.ID{peerA}, []peer.ID{peerB}, 10, 10, false},
++		{"no peers", now, []peer.ID{peerA}, nil, 10, 10, false},
++		{"behind in work", now, []peer.ID{peerA}, []peer.ID{peerA}, 11, 10, false},
++		{"sync active", now, []peer.ID{peerA}, []peer.ID{peerA}, 10, 10, true},
++	} {
++		if check(tc.at, tc.checked, tc.connected, tc.peerWork, tc.localWork, tc.syncing) {
++			t.Fatalf("%s incorrectly confirmed tip", tc.name)
++		}
++	}
++}
+diff --git a/p2p/sync.go b/p2p/sync.go
+index 94a435b..90d22b8 100644
+--- a/p2p/sync.go
++++ b/p2p/sync.go
+@@ -101,7 +101,8 @@ type DownloadedBlock struct {
+ 
+ // SyncManager handles chain synchronization
+ type SyncManager struct {
+-	mu sync.RWMutex
++	mu      sync.RWMutex
++	checkMu sync.Mutex
+ 
+ 	fetchEWMA atomic.Int64
+ 
+@@ -124,12 +125,16 @@ type SyncManager struct {
+ 	fetchBlocksByHash func(context.Context, peer.ID, [][32]byte) ([][]byte, error)
+ 
+ 	// Sync state
+-	syncing        bool
+-	syncPeer       peer.ID
+-	syncStartTime  time.Time
+-	syncTarget     uint64                     // Target height we're syncing to
+-	syncProgress   uint64                     // Current height we've processed to
+-	downloadBuffer map[uint64]DownloadedBlock // Buffer for out-of-order blocks
++	syncing          bool
++	syncPeer         peer.ID
++	syncStartTime    time.Time
++	syncTarget       uint64                     // Target height we're syncing to
++	syncProgress     uint64                     // Current height we've processed to
++	downloadBuffer   map[uint64]DownloadedBlock // Buffer for out-of-order blocks
++	lastPeerTipCheck time.Time
++	peerTipPeers     []peer.ID
++	peerTipWork      uint64
++	peerTipEpoch     uint64
+ 
+ 	ctx    context.Context
+ 	cancel context.CancelFunc
+@@ -272,17 +277,17 @@ func (sm *SyncManager) handleStatus(s network.Stream, data []byte) {
+ 
+ 	// Send our status back
+ 	ourStatus := sm.getStatus()
++	if status.TotalWork > ourStatus.TotalWork {
++		// Invalidate before writing the reply: an API status read must not use
++		// the old comparison while the next check is debounced or in flight.
++		sm.requestSyncCheck()
++	}
+ 	statusData, _ := json.Marshal(ourStatus)
+ 	if err := writeMessage(s, SyncMsgStatus, statusData); err != nil {
+ 		return
+ 	}
+ 
+-	// Check if we need to sync from this peer
+-	if status.TotalWork > ourStatus.TotalWork {
+-		// Don't spawn sync goroutines per inbound status message. Instead trigger
+-		// a serialized, multi-peer arbitration pass.
+-		sm.requestSyncCheck()
+-	}
++	// The queued check performs serialized, multi-peer arbitration.
+ }
+ 
+ // handleGetHeaders responds to a headers request
+@@ -472,6 +477,11 @@ func (sm *SyncManager) TriggerSync() {
+ }
+ 
+ func (sm *SyncManager) requestSyncCheck() {
++	// A queued status check must invalidate prior proof immediately. The
++	// debounce can otherwise leave an obsolete "caught up" result visible.
++	sm.mu.Lock()
++	sm.invalidatePeerTipLocked()
++	sm.mu.Unlock()
+ 	// Coalesce triggers (buffer size 1).
+ 	select {
+ 	case sm.statusSyncCh <- struct{}{}:
+@@ -511,12 +521,19 @@ func (sm *SyncManager) statusSyncLoop() {
+ 
+ // checkSync checks if we're behind and need to sync
+ func (sm *SyncManager) checkSync() {
++	sm.checkMu.Lock()
++	defer sm.checkMu.Unlock()
+ 	sm.mu.RLock()
+ 	if sm.syncing {
+ 		sm.mu.RUnlock()
+ 		return
+ 	}
+ 	sm.mu.RUnlock()
++	// A previous comparison must not survive a new failed/peerless check.
++	sm.mu.Lock()
++	sm.invalidatePeerTipLocked()
++	checkEpoch := sm.peerTipEpoch
++	sm.mu.Unlock()
+ 
+ 	peers := sm.node.Peers()
+ 	if len(peers) == 0 {
+@@ -585,6 +602,20 @@ collectStatuses:
+ 	// shorter — downloaded blocks land as side-chain entries, the chain
+ 	// never advances, and the retry fires endlessly.
+ 	if maxWork <= ourStatus.TotalWork {
++		if sm.ctx == nil || sm.ctx.Err() != nil {
++			return
++		}
++		checked := make([]peer.ID, 0, len(peerStatuses))
++		for _, ps := range peerStatuses {
++			checked = append(checked, ps.Peer)
++		}
++		sm.mu.Lock()
++		if sm.peerTipEpoch == checkEpoch {
++			sm.lastPeerTipCheck = time.Now()
++			sm.peerTipPeers = checked
++			sm.peerTipWork = maxWork
++		}
++		sm.mu.Unlock()
+ 		return
+ 	}
+ 
+@@ -599,6 +630,46 @@ collectStatuses:
+ 	go sm.parallelSyncFrom(syncPeers, targetHeight)
+ }
+ 
++func (sm *SyncManager) invalidatePeerTipLocked() {
++	sm.peerTipEpoch++
++	sm.lastPeerTipCheck = time.Time{}
++	sm.peerTipPeers = nil
++	sm.peerTipWork = 0
++}
++
++// PeerTipConfirmed requires a recent successful comparison with a peer that
++// remains connected. Height alone is not a consensus signal; compare work.
++func (sm *SyncManager) PeerTipConfirmed(maxAge time.Duration) bool {
++	if sm.ctx == nil || sm.ctx.Err() != nil {
++		return false
++	}
++	sm.mu.RLock()
++	checkedAt, work, syncing := sm.lastPeerTipCheck, sm.peerTipWork, sm.syncing
++	checked := append([]peer.ID(nil), sm.peerTipPeers...)
++	sm.mu.RUnlock()
++	if sm.node == nil {
++		return false
++	}
++	return peerTipEvidenceValid(checkedAt, checked, sm.node.Peers(), work,
++		sm.getStatus().TotalWork, syncing, maxAge, time.Now())
++}
++
++func peerTipEvidenceValid(checkedAt time.Time, checked, connected []peer.ID,
++	peerWork, localWork uint64, syncing bool, maxAge time.Duration, now time.Time) bool {
++	if syncing || checkedAt.IsZero() || now.Sub(checkedAt) > maxAge ||
++		len(checked) == 0 || localWork < peerWork {
++		return false
++	}
++	for _, current := range connected {
++		for _, observed := range checked {
++			if current == observed {
++				return true
++			}
++		}
++	}
++	return false
++}
++
+ // getStatusFrom requests status from a peer
+ func (sm *SyncManager) getStatusFrom(p peer.ID) (ChainStatus, error) {
+ 	ctx, cancel := context.WithTimeout(sm.ctx, 30*time.Second)
+@@ -652,6 +723,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
+ 		return
+ 	}
+ 	sm.syncing = true
++	sm.invalidatePeerTipLocked()
+ 	if len(peers) > 0 {
+ 		sm.syncPeer = peers[0].Peer // Primary peer for display
+ 	}

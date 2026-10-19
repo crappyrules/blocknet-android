@@ -38,11 +38,16 @@ private key or channel spend private key is used by Actions.
    those protection rules in Settings too. The publish job receives no owner
    signing secret. The workflow name `android-publish` alone does not create
    protection: GitHub can create an unprotected environment automatically.
-4. After phone acceptance and review of the release notes' remaining limits, create and
-   review the release tag. Run the workflow manually at that tag with
-   `sign_release=true` and `publish_release=false` first. Verify the downloaded
-   signed artifact, its signer certificate and checksum. This is a rehearsal.
-   For actual publication, start a **new** run at the reviewed tag with
+4. For the preview.7 phone-acceptance candidate, review and tag the exact
+   source commit, then run the workflow at that tag with `sign_release=true`
+   and `publish_release=false`. The tag is public, but this run only uploads a
+   protected Actions artifact; it creates no GitHub Release or on-chain notice.
+   The tagged workflow explicitly refuses to publish preview.7. Verify the
+   downloaded signed artifact, its signer certificate and checksum before an
+   in-place installation on a restored test wallet.
+5. After phone acceptance and review of the remaining limits, advance to a
+   newly reviewed release tag and notes. For actual publication, start a
+   **new** run at that tag with
    `sign_release=true`, `publish_release=true`, and `confirm_publish_tag`
    exactly equal to the selected tag. Approve `android-release`, then inspect
    the signed APK and `SHA256SUMS` from **that same run** before approving
@@ -60,11 +65,12 @@ publication; tag rules provide the needed protection against a move between
 the final check and GitHub release creation. The publish job also rechecks the
 downloaded artifact's SHA-256, source commit, certificate, package and version.
 
-## Local signing alternative
+## Local unsigned review build
 
-The current local owner script builds and signs the release APK from reviewed
-source and native build inputs. The existing CI produces **debug-signed** APKs;
-it does not produce an unsigned release APK that can simply be signed locally.
-An unsigned-CI/local-sign flow would need a separate reproducible unsigned
-release target and byte/provenance checks before adding that option. Do not
-re-sign a CI debug APK and present it as the release variant.
+With the reviewed native build inputs and complete public announcement pins,
+`./gradlew -PunsignedReleaseArtifact -PcoreMobileDir=... -PofflineWalletViewDir=... :app:assembleRelease`
+produces `app-release-unsigned.apk` for package and provenance inspection.
+It has no owner signature and cannot update an installed wallet. The normal
+release build still requires the pinned owner key and certificate. Use the
+protected `android-release` workflow above for an owner-signed phone candidate;
+do not re-sign a CI debug APK and present it as the release variant.

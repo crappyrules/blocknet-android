@@ -47,6 +47,7 @@ final class AnnouncementScanner {
 
     void poll() {
         if(!BuildConfig.ANNOUNCEMENT_ENABLED||!BuildConfig.CORE_ACTIVITY_API||
+            !runtime.syncRequested()||(MobileCorePolicy.enabled(context)&&!MobileCorePolicy.permitted(context))||
             !runtime.alive()||!runtime.network().equals("mainnet")||
             !SyncNetworkPolicy.read(context).allowed)return;
         synchronized(SCAN_LOCK) {
@@ -140,6 +141,7 @@ final class AnnouncementScanner {
                 .putInt("cursorTx",nextTx).putInt("cursorOutput",nextOutput)
                 .putString("partialHash",partial?lastHash:"").putString("pending",pending.encode());
             if(!partial&&blocks.length()>0)edit.putLong("anchorHeight",priorHeight).putString("anchorHash",lastHash);
+            requireConnection();
             if(!edit.commit())throw new IOException("Could not save on-chain scan cursor.");
             if(nextHeight>through)return;
         }
@@ -179,6 +181,7 @@ final class AnnouncementScanner {
         byte[] signer=decodeHex(BuildConfig.ANNOUNCEMENT_PRIMARY_PUB,32);
         int attempts=Math.min(4,pending.size());
         for(int attempt=0;attempt<attempts&&pending.size()>0;attempt++) {
+            requireConnection();
             AnnouncementPendingQueue.Entry entry=pending.first();
             if(!AnnouncementPendingQueue.confirmed(tip,entry.height))return;
             pending.removeFirst();
@@ -200,6 +203,7 @@ final class AnnouncementScanner {
             } catch(Exception retryable) {
                 if(!pending.offer(entry))throw new IOException("Pending retry queue unexpectedly full.");
             }
+            requireConnection();
             if(!state.edit().putString("pending",pending.encode()).commit())
                 throw new IOException("Could not save pending announcement retry.");
             if(changed)return;
@@ -223,6 +227,7 @@ final class AnnouncementScanner {
             .putInt("versionCode",release.versionCode).putString("tag",release.tag)
             .putString("page",release.page).putString("notes",release.notes);
         if(tip-height>=REORG_DEPTH)edit.putLong("floorSequence",record.sequence).putString("floorDigest",digest);
+        requireConnection();
         if(!edit.commit())throw new IOException("Could not save signed announcement.");
     }
 
@@ -288,6 +293,8 @@ final class AnnouncementScanner {
         } finally {connection.disconnect();}
     }
     private Network requireConnection() throws IOException {
+        if(!runtime.syncRequested()||(MobileCorePolicy.enabled(context)&&!MobileCorePolicy.permitted(context)))
+            throw new IOException("Announcement scan paused.");
         if(!SyncNetworkPolicy.read(context).allowed)throw new IOException("No permitted announcement connection.");
         Network network=SyncNetworkPolicy.allowedNetwork(context);
         if(network==null)throw new IOException("No permitted announcement connection.");
