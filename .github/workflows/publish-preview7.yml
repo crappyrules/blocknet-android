@@ -1,0 +1,85 @@
+name: Publish verified preview.7
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: publish-verified-preview7
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.repository == 'crappyrules/blocknet-android' && github.ref == 'refs/tags/v1.0.0-preview.7-publish' }}
+    runs-on: ubuntu-24.04
+    environment: android-publish
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out reviewed publication workflow and notes
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Check out the immutable preview.7 source tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: v1.0.0-preview.7
+          path: release-source
+          persist-credentials: false
+
+      - name: Set up Android SDK verifier
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          cmdline-tools-version: '12266719'
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+
+      - name: Download and verify the exact owner-signed artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          expected_source=04a30d60213e3930295169c527cc02f153ba98eb
+          expected_apk=024b183c0d28f9978b6e8532da8fe8e8f6bcb31cdf1c674de1d5c94a034b1d8c
+          test "$GITHUB_REF" = refs/tags/v1.0.0-preview.7-publish
+          test "$(git -C release-source rev-parse HEAD)" = "$expected_source"
+          test "$(git -C release-source ls-remote --tags origin 'refs/tags/v1.0.0-preview.7^{}' | cut -f1)" = "$expected_source"
+          test "$(gh api repos/crappyrules/blocknet-android/actions/artifacts/12236638661 --jq '.workflow_run.id == 39322305615 and .name == "blocknet-owner-signed-release" and .expired == false')" = true
+          gh run download 39322305615 -R crappyrules/blocknet-android \
+            -n blocknet-owner-signed-release -D signed-release
+          test "$(cat signed-release/SOURCE_COMMIT)" = "$expected_source"
+          (cd signed-release && sha256sum --check SHA256SUMS)
+          apk=signed-release/blocknet-wallet-arm64-activity-release.apk
+          test "$(sha256sum "$apk" | cut -d' ' -f1)" = "$expected_apk"
+          python3 release-source/android/scripts/verify_release_metadata.py \
+            "$apk" v1.0.0-preview.7
+          python3 release-source/android/scripts/verify_signed_mobile_artifact.py \
+            signed-release
+
+      - name: Publish once through the protected environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          expected_source=04a30d60213e3930295169c527cc02f153ba98eb
+          expected_apk=024b183c0d28f9978b6e8532da8fe8e8f6bcb31cdf1c674de1d5c94a034b1d8c
+          if gh release view v1.0.0-preview.7 -R crappyrules/blocknet-android >/dev/null 2>&1; then
+            echo 'Preview.7 release already exists; refusing duplicate publication.' >&2
+            exit 1
+          fi
+          test "$(git -C release-source ls-remote --tags origin 'refs/tags/v1.0.0-preview.7^{}' | cut -f1)" = "$expected_source"
+          test "$(sha256sum signed-release/blocknet-wallet-arm64-activity-release.apk | cut -d' ' -f1)" = "$expected_apk"
+          gh release create v1.0.0-preview.7 \
+            signed-release/blocknet-wallet-arm64-activity-release.apk \
+            signed-release/SHA256SUMS signed-release/SOURCE_COMMIT \
+            signed-release/core-mobile-build-provenance.json \
+            signed-release/offline-wallet-view-build-provenance.json \
+            -R crappyrules/blocknet-android --verify-tag --prerelease \
+            --title 'Blocknet Android v1.0.0-preview.7' \
+            --notes-file android/docs/OWNER_PREVIEW7_PUBLIC_RELEASE_NOTES.md
+          mkdir -p post-publish
+          gh release download v1.0.0-preview.7 -R crappyrules/blocknet-android \
+            --pattern blocknet-wallet-arm64-activity-release.apk --dir post-publish
+          test "$(sha256sum post-publish/blocknet-wallet-arm64-activity-release.apk | cut -d' ' -f1)" = "$expected_apk"
