@@ -1,0 +1,2 @@
+# Patch files contain unified diff context markers before source indentation.
+android/core-patches/*.patch whitespace=-blank-at-eol,-space-before-tab

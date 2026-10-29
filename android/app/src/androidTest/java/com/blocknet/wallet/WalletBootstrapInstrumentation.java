@@ -735,7 +735,15 @@ public final class WalletBootstrapInstrumentation extends Instrumentation {
                 "a".repeat(64)), "stopped and saved completion commits");
             check(!BootstrapSyncState.pending(getTargetContext()), "completed wallet returns to pause policy");
             try(java.io.FileOutputStream output=new java.io.FileOutputStream(file,true)){output.write(4);}
-            check(BootstrapSyncState.pending(getTargetContext()), "same-name replacement invalidates completion");
+            check(BootstrapSyncState.pending(getTargetContext()), "wallet rewrite invalidates old file binding");
+            JSONObject receipt=new JSONObject().put("version",1).put("wallet_id","a".repeat(64))
+                .put("chain_height",7).put("chain_hash","b".repeat(64));
+            check(BootstrapSyncState.rebindAfterStopped(getTargetContext(),network,wallet,receipt),
+                "verified normal re-encryption renews completion binding");
+            check(!BootstrapSyncState.pending(getTargetContext()),
+                "normal wallet save does not repeat initial sync");
+            try(java.io.FileOutputStream output=new java.io.FileOutputStream(file,true)){output.write(5);}
+            check(BootstrapSyncState.pending(getTargetContext()), "unverified same-name replacement invalidates completion");
             BootstrapSyncState.begin(getTargetContext(), network, wallet);
             check(BootstrapSyncState.pending(getTargetContext()), "restoring same wallet clears completion");
         } finally {

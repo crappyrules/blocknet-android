@@ -16,6 +16,7 @@
     <string name="loc_a_later_check_was_attempted_7081640c" formatted="false">A later check was attempted but did not confirm a mapping.</string>
     <string name="loc_a_native_wallet_for_zero_2d04f8eb" formatted="false">A native wallet for zero-knowledge money.</string>
     <string name="loc_a_previous_send_has_an_733008e5" formatted="false">A previous send has an unresolved outcome. Check its status before creating another transaction.</string>
+    <string name="loc_a_requested_catch_up_can_751ac4dd" formatted="false">A requested catch-up can continue after screen-off on a permitted connection. Once Core confirms the peer tip, it stops; Android then schedules inexact chain checks at least 15 minutes apart. Background checks do not unlock the wallet. Balances and payment alerts remain dated until you open and unlock it. Android may delay or stop a check; battery savings have not been measured.</string>
     <string name="loc_a_saved_full_address_never_f0a7f055" formatted="false">A saved full address never changes when its shortname changes. Last checked names come from the Blocknet ID HTTPS service; they are not independently authenticated. Names are checked before using one to send. Automatic checks cover at most two stale names per network per day after a live unlock over a permitted connection.</string>
     <string name="loc_a_send_is_awaiting_confirmation_4107560a" formatted="false">A send is awaiting confirmation</string>
     <string name="loc_a_verified_entry_needs_a_6fdad8ad" formatted="false">A verified entry needs a shortname</string>
@@ -49,6 +50,13 @@
     <string name="loc_android_notification_settings_dc3abdbd" formatted="false">Android notification settings</string>
     <string name="loc_android_notifications_are_currently_blocke_c253ff12" formatted="false">Android notifications are currently blocked. Allow notifications in system settings to receive transaction alerts.</string>
     <string name="loc_announcement_manifest_is_unavailable_39243806" formatted="false">Announcement manifest is unavailable.</string>
+    <string name="loc_approx_1_s_usdt_available_a1fd5de9">Approx. %1$s USDT available · BNT/USDT last trade %2$s</string>
+    <string name="loc_approximate_usdt_value_unavailable_while_8e8696bc" formatted="false">Approximate USDT value unavailable while wallet scans</string>
+    <string name="loc_approximate_value_unavailable_17cb27c1" formatted="false">Approximate value unavailable</string>
+    <string name="loc_approximate_value_unavailable_while_wallet_5285bdb3" formatted="false">Approximate value unavailable while wallet scans</string>
+    <string name="loc_bnt_usdt_last_trade_1_056352a3">BNT/USDT last trade %1$s · stale price (fetched %2$s ago)</string>
+    <string name="loc_bnt_usdt_last_trade_price_fd9fb2f2" formatted="false">BNT/USDT last trade price loading…</string>
+    <string name="loc_bnt_usdt_price_unavailable_1_238a1479">BNT/USDT price unavailable · %1$s</string>
     <string name="loc_back_up_your_wallet_and_fa9e43d2" formatted="false">Back up your wallet and verify recovery before upgrading.</string>
     <string name="loc_backup_exported_f75a67cf" formatted="false">Backup exported</string>
     <string name="loc_backup_imported_bd213a33" formatted="false">Backup imported</string>
@@ -77,9 +85,11 @@
     <string name="loc_cancel_19766ed6" formatted="false">Cancel</string>
     <string name="loc_cannot_read_selected_file_6e4f251c" formatted="false">Cannot read selected file</string>
     <string name="loc_cannot_write_to_selected_file_f3b4e592" formatted="false">Cannot write to selected file</string>
+    <string name="loc_chain_catch_up_paused_open_4f9b9216" formatted="false">Chain catch-up paused. Open wallet to check node status.</string>
     <string name="loc_chain_caught_up_open_wallet_ba755c34" formatted="false">Chain caught up. Open wallet to finish its scan.</string>
     <string name="loc_chain_height_cf1571b8" formatted="false">Chain height</string>
     <string name="loc_chain_height_1_s_f91f8774">Chain height: %1$s</string>
+    <string name="loc_chain_pause_failed_open_wallet_11bfe3c1" formatted="false">Chain pause failed. Open wallet to check node status.</string>
     <string name="loc_chain_syncing_open_wallet_to_f8863ce2" formatted="false">Chain syncing · open wallet to finish its scan</string>
     <string name="loc_chain_1_s_2_s_d76cc509">Chain: %1$s / %2$s blocks</string>
     <string name="loc_chain_1_s_blocks_finding_42880734">Chain: %1$s blocks · finding network target</string>
@@ -182,7 +192,6 @@
     <string name="loc_ethernet_681e1209" formatted="false">Ethernet</string>
     <string name="loc_export_backup_d6dfd0f0" formatted="false">Export backup</string>
     <string name="loc_export_encrypted_backup_2d2c38e3" formatted="false">Export encrypted backup</string>
-    <string name="loc_first_or_restored_wallet_sync_006905d9" formatted="false">First or restored wallet sync can continue with the screen off until the chain and wallet scan catch up. If Android stops the process, reopen and unlock to resume. After initial sync, leaving the wallet stops Core and background payment alerts. Saved balances remain dated until catch-up. Battery savings have not been measured.</string>
     <string name="loc_first_sync_may_take_time_3799d4d1" formatted="false">First sync may take time. Keep free storage available as the blockchain grows. A 64-bit ARM device running Android 8 or later is required.</string>
     <string name="loc_follow_phone_language_5b74c6f9" formatted="false">Follow phone language</string>
     <string name="loc_free_app_storage_1_s_3a2c94ff">Free app storage: %1$s</string>
@@ -202,6 +211,7 @@
     <string name="loc_incomplete_signed_shortname_response_29059e28" formatted="false">Incomplete signed shortname response</string>
     <string name="loc_incorrect_wallet_password_or_damaged_325f194f" formatted="false">Incorrect wallet password or damaged saved view.</string>
     <string name="loc_incorrect_wallet_password_or_damaged_5b618fe8" formatted="false">Incorrect wallet password or damaged wallet file.</string>
+    <string name="loc_indicative_usdt_value_from_the_e586e043" formatted="false">Indicative USDT value from the BNT/USDT last trade</string>
     <string name="loc_initial_sync_pause_failed_open_a65f038b" formatted="false">Initial sync pause failed. Open wallet to check node status.</string>
     <string name="loc_initial_sync_state_could_not_a7414556" formatted="false">Initial sync state could not be saved. Open wallet to retry.</string>
     <string name="loc_initial_wallet_scan_and_chain_71fd4ee1" formatted="false">Initial wallet scan and chain sync continuing</string>
@@ -364,6 +374,7 @@
     <string name="loc_remove_1_s_from_this_054b6f08">Remove %1$s from this device\'s address book?</string>
     <string name="loc_repeat_password_b74070f9" formatted="false">Repeat password</string>
     <string name="loc_rescan_ec4b3ecb" formatted="false">Rescan</string>
+    <string name="loc_rescan_started_at_local_block_e30da49e">Rescan started at local block %1$s. Watch wallet height as the node scans.</string>
     <string name="loc_rescan_wallet_a8d3c715" formatted="false">Rescan wallet</string>
     <string name="loc_rescan_wallet_88aed19e" formatted="false">Rescan wallet?</string>
     <string name="loc_resolve_payment_dd1a4b01" formatted="false">Resolve payment</string>
@@ -381,6 +392,7 @@
     <string name="loc_review_payment_80712e2f" formatted="false">Review payment</string>
     <string name="loc_review_this_payment_again_before_a06af684" formatted="false">Review this payment again before sending</string>
     <string name="loc_review_this_payment_against_outgoing_b52612dd" formatted="false">Review this payment against outgoing activity before resolving an unknown outcome.</string>
+    <string name="loc_safetrade_last_trade_is_indicative_ad036096" formatted="false">SafeTrade last trade is indicative; fetch time is not trade time.</string>
     <string name="loc_save_1509f561" formatted="false">Save</string>
     <string name="loc_save_recipient_b8c80d41" formatted="false">Save recipient</string>
     <string name="loc_saved_1_s_is_not_ea9cf1ba">Saved %1$s is not currently verified. Using the full address.</string>
@@ -424,6 +436,8 @@
     <string name="loc_shortname_service_returned_http_1_f4791a35">Shortname service returned HTTP %1$s</string>
     <string name="loc_shortname_signature_verification_failed_a97e6463" formatted="false">Shortname signature verification failed</string>
     <string name="loc_shortnames_use_1_64_letters_607a2ae0" formatted="false">Shortnames use 1–64 letters, numbers, dots, dashes or underscores</string>
+    <string name="loc_show_bnt_balance_27d62d2e" formatted="false">Show BNT balance</string>
+    <string name="loc_show_approximate_usdt_value_05070405" formatted="false">Show approximate USDT value</string>
     <string name="loc_show_diagnostics_59560b2b" formatted="false">Show diagnostics</string>
     <string name="loc_show_recovery_phrase_93749012" formatted="false">Show recovery phrase</string>
     <string name="loc_sign_0c9618e9" formatted="false">Sign</string>
@@ -445,7 +459,6 @@
     <string name="loc_start_sync_2f51aea0" formatted="false">Start sync</string>
     <string name="loc_start_the_bundled_blocknet_core_8df1e910" formatted="false">Start the bundled Blocknet core to open your wallet and connect to the network. No saved wallet view is available yet.</string>
     <string name="loc_start_wallet_node_05a23f7e" formatted="false">Start wallet node</string>
-    <string name="loc_stop_node_when_wallet_leaves_02e52a0e" formatted="false">Stop node when wallet leaves foreground</string>
     <string name="loc_stop_sync_b7379b6e" formatted="false">Stop sync</string>
     <string name="loc_stopping_node_for_the_sync_c60b8e29" formatted="false">Stopping node for the sync network preference…</string>
     <string name="loc_strong_biometric_unlock_is_available_da662b41" formatted="false">Strong biometric unlock is available.</string>
@@ -468,10 +481,12 @@
     <string name="loc_sync_paused_the_active_connection_9a6927d0" formatted="false">Sync paused: the active connection has not validated internet access. Complete any network sign-in first.</string>
     <string name="loc_sync_stopped_open_wallet_to_627c2d4c" formatted="false">Sync stopped. Open wallet to check node status.</string>
     <string name="loc_sync_target_1_s_391f34bc">Sync target: %1$s</string>
+    <string name="loc_sync_was_stopped_8fb1f178" formatted="false">Sync was stopped</string>
     <string name="loc_sync_will_resume_when_a_49576ad0" formatted="false">Sync will resume when a permitted network is available. No saved wallet view is available yet; open this wallet once while online to prepare one.</string>
     <string name="loc_syncing_no_bdf438ba" formatted="false">Syncing: no</string>
     <string name="loc_syncing_yes_1b4e3cf1" formatted="false">Syncing: yes</string>
     <string name="loc_to_c3bd7d9e" formatted="false">TO</string>
+    <string name="loc_tap_balance_to_show_approximate_9cb9010a" formatted="false">Tap balance to show approximate USDT value</string>
     <string name="loc_testnet_0493c829" formatted="false">Testnet</string>
     <string name="loc_that_shortname_currently_points_to_80a998a2" formatted="false">That shortname currently points to another address. The saved address was not changed.</string>
     <string name="loc_the_bundled_core_runs_locally_5b1a80d4" formatted="false">The bundled core runs locally in a foreground service. Chain sync uses network data, storage and battery.</string>
@@ -479,6 +494,7 @@
     <string name="loc_the_current_1_s_mapping_f26fff9e">The current $%1$s mapping could not be verified: %2$s. The address book still holds %3$s.</string>
     <string name="loc_the_estimated_fee_increased_review_5ae01332" formatted="false">The estimated fee increased. Review the payment again before sending.</string>
     <string name="loc_the_expected_apk_asset_is_bc22c49a" formatted="false">The expected APK asset is invalid</string>
+    <string name="loc_the_last_scheduled_chain_check_bd881ef6" formatted="false">The last scheduled chain check could not read Core status. Android will retry; open the wallet to inspect the node log.</string>
     <string name="loc_the_network_changed_unlock_the_6bbcb22c" formatted="false">The network changed. Unlock the selected wallet again.</string>
     <string name="loc_the_node_changed_while_checkpoints_ae7266ae" formatted="false">The node changed while checkpoints were refreshing. Check its current status.</string>
     <string name="loc_the_node_is_loading_unlock_f05f63ac" formatted="false">The node is loading. Unlock it when it becomes ready.</string>
@@ -497,6 +513,7 @@
     <string name="loc_this_qr_code_is_not_41aa17e1" formatted="false">This QR code is not a supported Blocknet payment request.</string>
     <string name="loc_this_address_is_already_in_4b0176dd" formatted="false">This address is already in the address book</string>
     <string name="loc_this_build_has_no_offline_802a4bc1" formatted="false">This build has no offline wallet reader.</string>
+    <string name="loc_this_clears_discovered_outputs_from_6b94af3c" formatted="false">This clears discovered outputs from the safe scan floor and scans the local chain again. A missing network block or locked wallet can delay completion.</string>
     <string name="loc_this_opens_the_official_release_71bec94f" formatted="false">This opens the official release page in your browser. The wallet does not download, authenticate, or install the APK there.</string>
     <string name="loc_this_shortname_does_not_resolve_5dfe4130" formatted="false">This shortname does not resolve to the current wallet address</string>
     <string name="loc_this_shortname_is_already_in_b34c88ac" formatted="false">This shortname is already in the address book</string>
@@ -532,6 +549,7 @@
     <string name="loc_use_password_2e1913a6" formatted="false">Use password</string>
     <string name="loc_use_recovery_word_1_s_ff833b84">Use recovery word %1$s</string>
     <string name="loc_use_saved_address_e865d589" formatted="false">Use saved address</string>
+    <string name="loc_use_scheduled_background_chain_sync_fa100f85" formatted="false">Use scheduled background chain sync</string>
     <string name="loc_use_the_shortname_in_one_94b08bc1" formatted="false">Use the shortname in one field only</string>
     <string name="loc_use_your_wallet_password_instead_13f12dc8" formatted="false">Use your wallet password instead.</string>
     <string name="loc_use_your_wallet_password_to_accd28fb" formatted="false">Use your wallet password to open the last state in the encrypted wallet file. Balances and activity may have changed; payments require reconnecting and unlocking the node.</string>
@@ -587,6 +605,10 @@
     <string name="loc_wallet_password_is_too_long_611b7159" formatted="false">Wallet password is too long</string>
     <string name="loc_wallet_password_length_is_unsupported_2efff226" formatted="false">Wallet password length is unsupported</string>
     <string name="loc_wallet_password_length_is_unsupported_a99000dd" formatted="false">Wallet password length is unsupported.</string>
+    <string name="loc_wallet_rescan_incomplete_1_s_f212556b">Wallet rescan incomplete: %1$s. Unlock and retry when sync is available.</string>
+    <string name="loc_wallet_rescan_reached_the_local_62740fbc" formatted="false">Wallet rescan reached the local chain tip. Network sync may still continue.</string>
+    <string name="loc_wallet_rescan_block_1_s_31402dd1">Wallet rescan: block %1$s / %2$s on the local chain</string>
+    <string name="loc_wallet_scan_block_1_s_ea07c946">Wallet scan: block %1$s / %2$s on the local chain</string>
     <string name="loc_welcome_back_dfdbca16" formatted="false">Welcome back.</string>
     <string name="loc_wi_fi_337253f2" formatted="false">Wi-Fi</string>
     <string name="loc_wi_fi_and_mobile_data_ddb1c21a" formatted="false">Wi-Fi and mobile data</string>

@@ -38,6 +38,7 @@ final class GeneratedTranslations {
         exact.put("A later check was attempted but did not confirm a mapping.",R.string.loc_a_later_check_was_attempted_7081640c);
         exact.put("A native wallet for zero-knowledge money.",R.string.loc_a_native_wallet_for_zero_2d04f8eb);
         exact.put("A previous send has an unresolved outcome. Check its status before creating another transaction.",R.string.loc_a_previous_send_has_an_733008e5);
+        exact.put("A requested catch-up can continue after screen-off on a permitted connection. Once Core confirms the peer tip, it stops; Android then schedules inexact chain checks at least 15 minutes apart. Background checks do not unlock the wallet. Balances and payment alerts remain dated until you open and unlock it. Android may delay or stop a check; battery savings have not been measured.",R.string.loc_a_requested_catch_up_can_751ac4dd);
         exact.put("A saved full address never changes when its shortname changes. Last checked names come from the Blocknet ID HTTPS service; they are not independently authenticated. Names are checked before using one to send. Automatic checks cover at most two stale names per network per day after a live unlock over a permitted connection.",R.string.loc_a_saved_full_address_never_f0a7f055);
         exact.put("A send is awaiting confirmation",R.string.loc_a_send_is_awaiting_confirmation_4107560a);
         exact.put("A verified entry needs a shortname",R.string.loc_a_verified_entry_needs_a_6fdad8ad);
@@ -71,6 +72,13 @@ final class GeneratedTranslations {
         exact.put("Android notification settings",R.string.loc_android_notification_settings_dc3abdbd);
         exact.put("Android notifications are currently blocked. Allow notifications in system settings to receive transaction alerts.",R.string.loc_android_notifications_are_currently_blocke_c253ff12);
         exact.put("Announcement manifest is unavailable.",R.string.loc_announcement_manifest_is_unavailable_39243806);
+        templates.add(new Template(R.string.loc_approx_1_s_usdt_available_a1fd5de9,"Approx. %1$s USDT available · BNT/USDT last trade %2$s"));
+        exact.put("Approximate USDT value unavailable while wallet scans",R.string.loc_approximate_usdt_value_unavailable_while_8e8696bc);
+        exact.put("Approximate value unavailable",R.string.loc_approximate_value_unavailable_17cb27c1);
+        exact.put("Approximate value unavailable while wallet scans",R.string.loc_approximate_value_unavailable_while_wallet_5285bdb3);
+        templates.add(new Template(R.string.loc_bnt_usdt_last_trade_1_056352a3,"BNT/USDT last trade %1$s · stale price (fetched %2$s ago)"));
+        exact.put("BNT/USDT last trade price loading…",R.string.loc_bnt_usdt_last_trade_price_fd9fb2f2);
+        templates.add(new Template(R.string.loc_bnt_usdt_price_unavailable_1_238a1479,"BNT/USDT price unavailable · %1$s"));
         exact.put("Back up your wallet and verify recovery before upgrading.",R.string.loc_back_up_your_wallet_and_fa9e43d2);
         exact.put("Backup exported",R.string.loc_backup_exported_f75a67cf);
         exact.put("Backup imported",R.string.loc_backup_imported_bd213a33);
@@ -99,9 +107,11 @@ final class GeneratedTranslations {
         exact.put("Cancel",R.string.loc_cancel_19766ed6);
         exact.put("Cannot read selected file",R.string.loc_cannot_read_selected_file_6e4f251c);
         exact.put("Cannot write to selected file",R.string.loc_cannot_write_to_selected_file_f3b4e592);
+        exact.put("Chain catch-up paused. Open wallet to check node status.",R.string.loc_chain_catch_up_paused_open_4f9b9216);
         exact.put("Chain caught up. Open wallet to finish its scan.",R.string.loc_chain_caught_up_open_wallet_ba755c34);
         exact.put("Chain height",R.string.loc_chain_height_cf1571b8);
         templates.add(new Template(R.string.loc_chain_height_1_s_f91f8774,"Chain height: %1$s"));
+        exact.put("Chain pause failed. Open wallet to check node status.",R.string.loc_chain_pause_failed_open_wallet_11bfe3c1);
         exact.put("Chain syncing · open wallet to finish its scan",R.string.loc_chain_syncing_open_wallet_to_f8863ce2);
         templates.add(new Template(R.string.loc_chain_1_s_2_s_d76cc509,"Chain: %1$s / %2$s blocks"));
         templates.add(new Template(R.string.loc_chain_1_s_blocks_finding_42880734,"Chain: %1$s blocks · finding network target"));
@@ -204,7 +214,6 @@ final class GeneratedTranslations {
         exact.put("Ethernet",R.string.loc_ethernet_681e1209);
         exact.put("Export backup",R.string.loc_export_backup_d6dfd0f0);
         exact.put("Export encrypted backup",R.string.loc_export_encrypted_backup_2d2c38e3);
-        exact.put("First or restored wallet sync can continue with the screen off until the chain and wallet scan catch up. If Android stops the process, reopen and unlock to resume. After initial sync, leaving the wallet stops Core and background payment alerts. Saved balances remain dated until catch-up. Battery savings have not been measured.",R.string.loc_first_or_restored_wallet_sync_006905d9);
         exact.put("First sync may take time. Keep free storage available as the blockchain grows. A 64-bit ARM device running Android 8 or later is required.",R.string.loc_first_sync_may_take_time_3799d4d1);
         exact.put("Follow phone language",R.string.loc_follow_phone_language_5b74c6f9);
         templates.add(new Template(R.string.loc_free_app_storage_1_s_3a2c94ff,"Free app storage: %1$s"));
@@ -224,6 +233,7 @@ final class GeneratedTranslations {
         exact.put("Incomplete signed shortname response",R.string.loc_incomplete_signed_shortname_response_29059e28);
         exact.put("Incorrect wallet password or damaged saved view.",R.string.loc_incorrect_wallet_password_or_damaged_325f194f);
         exact.put("Incorrect wallet password or damaged wallet file.",R.string.loc_incorrect_wallet_password_or_damaged_5b618fe8);
+        exact.put("Indicative USDT value from the BNT/USDT last trade",R.string.loc_indicative_usdt_value_from_the_e586e043);
         exact.put("Initial sync pause failed. Open wallet to check node status.",R.string.loc_initial_sync_pause_failed_open_a65f038b);
         exact.put("Initial sync state could not be saved. Open wallet to retry.",R.string.loc_initial_sync_state_could_not_a7414556);
         exact.put("Initial wallet scan and chain sync continuing",R.string.loc_initial_wallet_scan_and_chain_71fd4ee1);
@@ -386,6 +396,7 @@ final class GeneratedTranslations {
         templates.add(new Template(R.string.loc_remove_1_s_from_this_054b6f08,"Remove %1$s from this device's address book?"));
         exact.put("Repeat password",R.string.loc_repeat_password_b74070f9);
         exact.put("Rescan",R.string.loc_rescan_ec4b3ecb);
+        templates.add(new Template(R.string.loc_rescan_started_at_local_block_e30da49e,"Rescan started at local block %1$s. Watch wallet height as the node scans."));
         exact.put("Rescan wallet",R.string.loc_rescan_wallet_a8d3c715);
         exact.put("Rescan wallet?",R.string.loc_rescan_wallet_88aed19e);
         exact.put("Resolve payment",R.string.loc_resolve_payment_dd1a4b01);
@@ -403,6 +414,7 @@ final class GeneratedTranslations {
         exact.put("Review payment",R.string.loc_review_payment_80712e2f);
         exact.put("Review this payment again before sending",R.string.loc_review_this_payment_again_before_a06af684);
         exact.put("Review this payment against outgoing activity before resolving an unknown outcome.",R.string.loc_review_this_payment_against_outgoing_b52612dd);
+        exact.put("SafeTrade last trade is indicative; fetch time is not trade time.",R.string.loc_safetrade_last_trade_is_indicative_ad036096);
         exact.put("Save",R.string.loc_save_1509f561);
         exact.put("Save recipient",R.string.loc_save_recipient_b8c80d41);
         templates.add(new Template(R.string.loc_saved_1_s_is_not_ea9cf1ba,"Saved %1$s is not currently verified. Using the full address."));
@@ -446,6 +458,8 @@ final class GeneratedTranslations {
         templates.add(new Template(R.string.loc_shortname_service_returned_http_1_f4791a35,"Shortname service returned HTTP %1$s"));
         exact.put("Shortname signature verification failed",R.string.loc_shortname_signature_verification_failed_a97e6463);
         exact.put("Shortnames use 1–64 letters, numbers, dots, dashes or underscores",R.string.loc_shortnames_use_1_64_letters_607a2ae0);
+        exact.put("Show BNT balance",R.string.loc_show_bnt_balance_27d62d2e);
+        exact.put("Show approximate USDT value",R.string.loc_show_approximate_usdt_value_05070405);
         exact.put("Show diagnostics",R.string.loc_show_diagnostics_59560b2b);
         exact.put("Show recovery phrase",R.string.loc_show_recovery_phrase_93749012);
         exact.put("Sign",R.string.loc_sign_0c9618e9);
@@ -467,7 +481,6 @@ final class GeneratedTranslations {
         exact.put("Start sync",R.string.loc_start_sync_2f51aea0);
         exact.put("Start the bundled Blocknet core to open your wallet and connect to the network. No saved wallet view is available yet.",R.string.loc_start_the_bundled_blocknet_core_8df1e910);
         exact.put("Start wallet node",R.string.loc_start_wallet_node_05a23f7e);
-        exact.put("Stop node when wallet leaves foreground",R.string.loc_stop_node_when_wallet_leaves_02e52a0e);
         exact.put("Stop sync",R.string.loc_stop_sync_b7379b6e);
         exact.put("Stopping node for the sync network preference…",R.string.loc_stopping_node_for_the_sync_c60b8e29);
         exact.put("Strong biometric unlock is available.",R.string.loc_strong_biometric_unlock_is_available_da662b41);
@@ -490,10 +503,12 @@ final class GeneratedTranslations {
         exact.put("Sync paused: the active connection has not validated internet access. Complete any network sign-in first.",R.string.loc_sync_paused_the_active_connection_9a6927d0);
         exact.put("Sync stopped. Open wallet to check node status.",R.string.loc_sync_stopped_open_wallet_to_627c2d4c);
         templates.add(new Template(R.string.loc_sync_target_1_s_391f34bc,"Sync target: %1$s"));
+        exact.put("Sync was stopped",R.string.loc_sync_was_stopped_8fb1f178);
         exact.put("Sync will resume when a permitted network is available. No saved wallet view is available yet; open this wallet once while online to prepare one.",R.string.loc_sync_will_resume_when_a_49576ad0);
         exact.put("Syncing: no",R.string.loc_syncing_no_bdf438ba);
         exact.put("Syncing: yes",R.string.loc_syncing_yes_1b4e3cf1);
         exact.put("TO",R.string.loc_to_c3bd7d9e);
+        exact.put("Tap balance to show approximate USDT value",R.string.loc_tap_balance_to_show_approximate_9cb9010a);
         exact.put("Testnet",R.string.loc_testnet_0493c829);
         exact.put("That shortname currently points to another address. The saved address was not changed.",R.string.loc_that_shortname_currently_points_to_80a998a2);
         exact.put("The bundled core runs locally in a foreground service. Chain sync uses network data, storage and battery.",R.string.loc_the_bundled_core_runs_locally_5b1a80d4);
@@ -501,6 +516,7 @@ final class GeneratedTranslations {
         templates.add(new Template(R.string.loc_the_current_1_s_mapping_f26fff9e,"The current $%1$s mapping could not be verified: %2$s. The address book still holds %3$s."));
         exact.put("The estimated fee increased. Review the payment again before sending.",R.string.loc_the_estimated_fee_increased_review_5ae01332);
         exact.put("The expected APK asset is invalid",R.string.loc_the_expected_apk_asset_is_bc22c49a);
+        exact.put("The last scheduled chain check could not read Core status. Android will retry; open the wallet to inspect the node log.",R.string.loc_the_last_scheduled_chain_check_bd881ef6);
         exact.put("The network changed. Unlock the selected wallet again.",R.string.loc_the_network_changed_unlock_the_6bbcb22c);
         exact.put("The node changed while checkpoints were refreshing. Check its current status.",R.string.loc_the_node_changed_while_checkpoints_ae7266ae);
         exact.put("The node is loading. Unlock it when it becomes ready.",R.string.loc_the_node_is_loading_unlock_f05f63ac);
@@ -519,6 +535,7 @@ final class GeneratedTranslations {
         exact.put("This QR code is not a supported Blocknet payment request.",R.string.loc_this_qr_code_is_not_41aa17e1);
         exact.put("This address is already in the address book",R.string.loc_this_address_is_already_in_4b0176dd);
         exact.put("This build has no offline wallet reader.",R.string.loc_this_build_has_no_offline_802a4bc1);
+        exact.put("This clears discovered outputs from the safe scan floor and scans the local chain again. A missing network block or locked wallet can delay completion.",R.string.loc_this_clears_discovered_outputs_from_6b94af3c);
         exact.put("This opens the official release page in your browser. The wallet does not download, authenticate, or install the APK there.",R.string.loc_this_opens_the_official_release_71bec94f);
         exact.put("This shortname does not resolve to the current wallet address",R.string.loc_this_shortname_does_not_resolve_5dfe4130);
         exact.put("This shortname is already in the address book",R.string.loc_this_shortname_is_already_in_b34c88ac);
@@ -554,6 +571,7 @@ final class GeneratedTranslations {
         exact.put("Use password",R.string.loc_use_password_2e1913a6);
         templates.add(new Template(R.string.loc_use_recovery_word_1_s_ff833b84,"Use recovery word %1$s"));
         exact.put("Use saved address",R.string.loc_use_saved_address_e865d589);
+        exact.put("Use scheduled background chain sync",R.string.loc_use_scheduled_background_chain_sync_fa100f85);
         exact.put("Use the shortname in one field only",R.string.loc_use_the_shortname_in_one_94b08bc1);
         exact.put("Use your wallet password instead.",R.string.loc_use_your_wallet_password_instead_13f12dc8);
         exact.put("Use your wallet password to open the last state in the encrypted wallet file. Balances and activity may have changed; payments require reconnecting and unlocking the node.",R.string.loc_use_your_wallet_password_to_accd28fb);
@@ -609,6 +627,10 @@ final class GeneratedTranslations {
         exact.put("Wallet password is too long",R.string.loc_wallet_password_is_too_long_611b7159);
         exact.put("Wallet password length is unsupported",R.string.loc_wallet_password_length_is_unsupported_2efff226);
         exact.put("Wallet password length is unsupported.",R.string.loc_wallet_password_length_is_unsupported_a99000dd);
+        templates.add(new Template(R.string.loc_wallet_rescan_incomplete_1_s_f212556b,"Wallet rescan incomplete: %1$s. Unlock and retry when sync is available."));
+        exact.put("Wallet rescan reached the local chain tip. Network sync may still continue.",R.string.loc_wallet_rescan_reached_the_local_62740fbc);
+        templates.add(new Template(R.string.loc_wallet_rescan_block_1_s_31402dd1,"Wallet rescan: block %1$s / %2$s on the local chain"));
+        templates.add(new Template(R.string.loc_wallet_scan_block_1_s_ea07c946,"Wallet scan: block %1$s / %2$s on the local chain"));
         exact.put("Welcome back.",R.string.loc_welcome_back_dfdbca16);
         exact.put("Wi-Fi",R.string.loc_wi_fi_337253f2);
         exact.put("Wi-Fi and mobile data",R.string.loc_wi_fi_and_mobile_data_ddb1c21a);

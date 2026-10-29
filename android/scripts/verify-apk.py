@@ -66,7 +66,7 @@ def verified_mobile_inputs(directory):
     for name in ('0005-core-wallet-persistence.patch', '0006-core-wallet-scan-serialization.patch',
                  '0007-core-wallet-send-readiness.patch', '0008-core-wallet-send-reorg-activity.patch',
                  '0009-core-wallet-notification-overflow.patch', '0010-bootstrap-progress.patch',
-                 '0011-fetched-block-wallet-scan.patch'):
+                 '0011-fetched-block-wallet-scan.patch', '0012-wallet-birth-rescan.patch'):
         required += [patches / name, directory / name]
     qa_patch = root / 'qa/controlled-peer.patch'
     if args.bootstrap_qa:
@@ -94,7 +94,8 @@ def verified_mobile_inputs(directory):
                      'wallet_followup_patch_sha256': patches / '0008-core-wallet-send-reorg-activity.patch',
                      'wallet_notification_overflow_patch_sha256': patches / '0009-core-wallet-notification-overflow.patch',
                      'bootstrap_progress_patch_sha256': patches / '0010-bootstrap-progress.patch',
-                     'fetched_block_wallet_scan_patch_sha256': patches / '0011-fetched-block-wallet-scan.patch'})
+                     'fetched_block_wallet_scan_patch_sha256': patches / '0011-fetched-block-wallet-scan.patch',
+                     'wallet_birth_rescan_patch_sha256': patches / '0012-wallet-birth-rescan.patch'})
     if args.bootstrap_qa:
         expected.update({'qa_peer_only_patch_sha256': qa_patch,
                          'reviewed_base_provenance_sha256': directory / 'reviewed-build-provenance.json'})
@@ -107,7 +108,7 @@ def verified_mobile_inputs(directory):
             hashlib.sha256((directory / 'android-cgo-link-flags.patch').read_bytes()).hexdigest() == provenance['android_link_shim_sha256'] and
             hashlib.sha256((directory / 'onchain-announcement-scan.patch').read_bytes()).hexdigest() == provenance['announcement_scan_patch_sha256'],
             'Experimental build patch copies differ from the reviewed source patches')
-    normal_order = ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', '0005-core-wallet-persistence.patch', '0006-core-wallet-scan-serialization.patch', '0007-core-wallet-send-readiness.patch', '0008-core-wallet-send-reorg-activity.patch', '0009-core-wallet-notification-overflow.patch', '0010-bootstrap-progress.patch', '0011-fetched-block-wallet-scan.patch']
+    normal_order = ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', '0005-core-wallet-persistence.patch', '0006-core-wallet-scan-serialization.patch', '0007-core-wallet-send-readiness.patch', '0008-core-wallet-send-reorg-activity.patch', '0009-core-wallet-notification-overflow.patch', '0010-bootstrap-progress.patch', '0011-fetched-block-wallet-scan.patch', '0012-wallet-birth-rescan.patch']
     require(provenance.get('mobile_client_capability') == 1 and
                 provenance.get('patch_order') == (normal_order + ['qa/controlled-peer.patch'] if args.bootstrap_qa else normal_order) and
                 hashlib.sha256((directory / 'mobile-client-policy.patch').read_bytes()).hexdigest() == provenance['mobile_client_patch_sha256'] and
@@ -118,7 +119,8 @@ def verified_mobile_inputs(directory):
                                         ('0008-core-wallet-send-reorg-activity.patch', 'wallet_followup_patch_sha256'),
                                         ('0009-core-wallet-notification-overflow.patch', 'wallet_notification_overflow_patch_sha256'),
                                         ('0010-bootstrap-progress.patch', 'bootstrap_progress_patch_sha256'),
-                                        ('0011-fetched-block-wallet-scan.patch', 'fetched_block_wallet_scan_patch_sha256')]),
+                                        ('0011-fetched-block-wallet-scan.patch', 'fetched_block_wallet_scan_patch_sha256'),
+                                        ('0012-wallet-birth-rescan.patch', 'wallet_birth_rescan_patch_sha256')]),
             'Mobile Core capability or ordered patch provenance is invalid')
     if args.bootstrap_qa:
         base = json.loads((directory / 'reviewed-build-provenance.json').read_bytes())

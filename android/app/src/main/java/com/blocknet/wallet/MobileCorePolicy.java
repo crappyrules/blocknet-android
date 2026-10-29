@@ -11,7 +11,7 @@ import android.os.Looper;
 import android.os.PowerManager;
 import java.io.IOException;
 
-/** Foreground-only mobile fallback. It stops Core; it is not an in-process suspend. */
+/** Mobile foreground lifecycle with bounded background chain catch-up. */
 final class MobileCorePolicy {
     private static final String KEY = "mobile_core_foreground_only";
     private static final String REQUESTED = "mobile_core_sync_requested";
@@ -85,9 +85,11 @@ final class MobileCorePolicy {
     // Only the existing foreground service may keep Core syncing during a
     // pending first scan. This does not grant interactive wallet operations.
     static boolean syncPermitted(Context context) {
-        return shouldRun(enabled(context),foreground,BootstrapSyncState.pending(context),true,true);
+        return shouldRun(enabled(context),foreground,
+            BootstrapSyncState.pending(context)||BackgroundChainSync.leased(),true,true);
     }
-    static boolean paused(Context context) { return enabled(context) && !foreground && !BootstrapSyncState.pending(context); }
+    static boolean paused(Context context) { return enabled(context) && !foreground
+        && !BootstrapSyncState.pending(context) && !BackgroundChainSync.leased(); }
     static boolean background() { return BuildConfig.CORE_MOBILE_CLIENT && !foreground; }
 
     static boolean shouldRun(boolean enabled, boolean foreground, boolean requested, boolean networkAllowed) {
@@ -106,6 +108,7 @@ final class MobileCorePolicy {
     static void setEnabled(Context context, boolean value) throws IOException {
         if (!context.getSharedPreferences("wallet", Context.MODE_PRIVATE).edit().putBoolean(KEY, value).commit())
             throw new IOException("Could not save mobile Core policy");
+        try { BackgroundChainSync.reconcileSchedule(context); } catch (RuntimeException ignored) { }
         recheck(context);
     }
 

@@ -88,6 +88,8 @@ public final class CoreService extends Service {
                 connectionChanged(CoreServiceReconcileGate.Trigger.RECHECK);
                 return START_NOT_STICKY;
             }
+            BackgroundChainSync.serviceLease(false);
+            try { BackgroundChainSync.reconcileSchedule(this); } catch (RuntimeException ignored) { }
             stopping = true; reconcileEpoch.incrementAndGet(); NativeRuntime.get(this).setSyncRequested(false); NativeRuntime.get(this).signalNetworkPause();
             updateBootstrapWakeLease();
             worker.execute(() -> {
@@ -111,8 +113,14 @@ public final class CoreService extends Service {
                 synchronized (wakeGuard) { if (bootstrapWakeLease != null) bootstrapWakeLease.reset(); }
                 bootstrapWakePauseStarted = false;
             }
-            stopping = false; NativeRuntime.get(this).requestSync(this);
-            connectionChanged(CoreServiceReconcileGate.Trigger.START);
+            BackgroundChainSync.serviceLease(true);
+            try { BackgroundChainSync.reconcileSchedule(this); } catch (RuntimeException ignored) { }
+            stopping = false;
+            worker.execute(() -> {
+                if (!stopping && MobileCorePolicy.requested(this)
+                    && NativeRuntime.get(this).tryRequestSync(this))
+                    connectionChanged(CoreServiceReconcileGate.Trigger.START);
+            });
             handler.removeCallbacks(monitor); handler.postDelayed(monitor, 5000);
         }
         return START_NOT_STICKY;
@@ -283,14 +291,19 @@ public final class CoreService extends Service {
         if (stopping || epoch != reconcileEpoch.get()) return;
         final long command = commandEpoch;
         NativeRuntime r = NativeRuntime.get(this);
-        if (!r.syncRequested()) return;
+        if (!r.syncRequested() || !r.ownsSyncRequest(this)) return;
         if(!MobileCorePolicy.background()){backgroundLockFailed=false;bootstrapProofFailed=false;}
         if(backgroundLockFailed&&MobileCorePolicy.background()){
             publish("Open wallet to resume initial sync",epoch);return;
         }
         SyncNetworkPolicy.State state = SyncNetworkPolicy.read(this);
         if (!state.allowed || !MobileCorePolicy.syncPermitted(this)) {
-            try { if (r.alive()) r.stop(); }
+            try { if (r.alive()) {
+                String wallet=BootstrapSyncState.activeWallet(getSharedPreferences("wallet",MODE_PRIVATE),r.network());
+                r.stop();
+                try { BootstrapSyncState.rebindAfterStopped(this,r.network(),wallet,r.shutdownProof()); }
+                catch (Exception ignored) { /* Missing proof leaves the wallet pending. */ }
+            } }
             catch (Exception e) { publish("Sync stopped. Open wallet to check node status.",epoch); return; }
             publish(state.allowed ? "Node stopped while wallet is in background" : state.reason,epoch);
             if (MobileCorePolicy.paused(this)) retirePausedService(epoch,command);
@@ -429,6 +442,10 @@ public final class CoreService extends Service {
                     !MobileCorePolicy.background()||!MobileCorePolicy.requested(this)||
                     !SyncNetworkPolicy.read(this).allowed||generation!=runtime.generation())return;
                 if(!BootstrapSyncState.completeAfterStopped(this,network,wallet,progress.getString("wallet_id")))return;
+                // The first-sync exception ends with the durable completion
+                // marker. Retire its service lease before reconcile, or that
+                // reconcile can restart Core and erase this shutdown proof.
+                BackgroundChainSync.serviceLease(false);
                 updateBootstrapWakeLease();
             } catch(Exception saveFailure) {
                 bootstrapProofFailed=true;
@@ -443,6 +460,66 @@ public final class CoreService extends Service {
             handler.post(()->{if(!stopping&&commandEpoch==command){stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();}});
         }
     }
+    private void evaluateBackgroundChain(NativeRuntime runtime) {
+        if (!MobileCorePolicy.background() || !BackgroundChainSync.serviceLeased()
+            || BootstrapSyncState.pending(this) || !SyncNetworkPolicy.read(this).allowed
+            || !runtime.syncRequested() || !runtime.alive()) return;
+        if (awaitingApiGeneration == runtime.generation() && !runtime.cookie().isFile()) return;
+        final long generation=runtime.generation(), command=commandEpoch, epoch=reconcileEpoch.get();
+        final String network=runtime.network();
+        final String wallet=BootstrapSyncState.activeWallet(getSharedPreferences("wallet",MODE_PRIVATE),network);
+        JSONObject progress;
+        try { progress=new WalletApi(runtime).request("GET","/api/wallet/bootstrap",null,null,5000); }
+        catch (Exception unavailable) {
+            // Without an authenticated wallet-loaded answer we cannot leave
+            // a routine background Core resident with possible wallet keys.
+            backgroundLockFailed=true;
+            runtime.signalNetworkPause();
+            try { runtime.stop(); } catch (Exception ignored) { }
+            publish("Chain catch-up paused. Open wallet to check node status.",epoch);
+            if (!runtime.alive()) retireFailedBackground(epoch,command);
+            return;
+        }
+        if (stopping || commandEpoch!=command || epoch!=reconcileEpoch.get()
+            || generation!=runtime.generation() || !runtime.syncRequested()
+            || !MobileCorePolicy.requested(this) || !MobileCorePolicy.background()
+            || !SyncNetworkPolicy.read(this).allowed) return;
+        if (progress.optBoolean("wallet_loaded")) {
+            // A locked API still leaves wallet keys in Core. Finish this
+            // user-started chain session with a fresh, unloaded process.
+            try {
+                runtime.stop();
+                try { BootstrapSyncState.rebindAfterStopped(this,network,wallet,runtime.shutdownProof()); }
+                catch (Exception ignored) { /* A saved marker may be recovered on the next unlocked scan. */ }
+                if (stopping || commandEpoch!=command || epoch!=reconcileEpoch.get()
+                    || !runtime.syncRequested() || !MobileCorePolicy.requested(this)
+                    || !MobileCorePolicy.background() || !SyncNetworkPolicy.read(this).allowed) return;
+                runtime.start(); ownedGeneration=runtime.generation();
+                awaitingApiGeneration=ownedGeneration;
+            } catch (Exception failed) {
+                backgroundLockFailed=true;
+                runtime.signalNetworkPause();
+                publish("Chain catch-up paused. Open wallet to check node status.",epoch);
+                getSystemService(NotificationManager.class).notify(42,
+                    advisory("Chain catch-up paused. Open wallet to check node status."));
+                if (!runtime.alive()) retireFailedBackground(epoch,command);
+            }
+            return;
+        }
+        if (!BackgroundChainSync.ready(progress) || new WalletRepository(this).hasPendingSend()) return;
+        try { runtime.stop(); }
+        catch (Exception failed) { publish("Chain pause failed. Open wallet to check node status.",epoch); return; }
+        BackgroundChainSync.serviceLease(false);
+        retirePausedService(epoch,command);
+    }
+    private void retireFailedBackground(long epoch,long command) {
+        handler.post(() -> {
+            if (stopping || epoch!=reconcileEpoch.get() || command!=commandEpoch
+                || !MobileCorePolicy.background() || NativeRuntime.get(this).alive()) return;
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            stopSelf();
+        });
+    }
     private final Runnable monitor = new Runnable() {
         @Override public void run() {
             if (stopping) return;
@@ -452,11 +529,18 @@ public final class CoreService extends Service {
               try {
                 if (stopping) return;
                 NativeRuntime r = NativeRuntime.get(CoreService.this);
+                if (!r.ownsSyncRequest(CoreService.this)) {
+                    if (!MobileCorePolicy.requested(CoreService.this)
+                        || !r.tryRequestSync(CoreService.this)) return;
+                    connectionChanged(CoreServiceReconcileGate.Trigger.HEALTH);
+                }
                 if (!r.syncRequested()) return;
                 if(!MobileCorePolicy.background()){backgroundLockFailed=false;bootstrapProofFailed=false;}
                 if(!secureBackgroundWallet(r))return;
                 if(MobileCorePolicy.enabled(CoreService.this)&&MobileCorePolicy.background()&&BootstrapSyncState.pending(CoreService.this)
                     &&SyncNetworkPolicy.read(CoreService.this).allowed&&r.alive())evaluateBootstrap(r);
+                else if(MobileCorePolicy.enabled(CoreService.this)&&MobileCorePolicy.background()
+                    &&SyncNetworkPolicy.read(CoreService.this).allowed&&r.alive())evaluateBackgroundChain(r);
                 boolean allowed = SyncNetworkPolicy.read(CoreService.this).allowed && MobileCorePolicy.syncPermitted(CoreService.this);
                 if (MobileCorePolicy.paused(CoreService.this) || (allowed != r.alive()))
                     connectionChanged(CoreServiceReconcileGate.Trigger.HEALTH);
@@ -483,6 +567,7 @@ public final class CoreService extends Service {
     @Override public IBinder onBind(Intent i) { return null; }
     @Override public void onDestroy() {
         stopping = true;
+        BackgroundChainSync.serviceLease(false);
         synchronized(wakeGuard) {
             if(bootstrapWakeLease!=null)try { bootstrapWakeLease.close(); }
             catch(RuntimeException ignored) { /* Continue stopping Core even if Android rejects release. */ }
@@ -494,7 +579,15 @@ public final class CoreService extends Service {
         NativeRuntime r = NativeRuntime.get(this);
         r.cancelCheckpointRefresh();
         r.clearSyncRequest(this);
-        worker.execute(() -> { long owned = ownedGeneration; try { if (owned >= 0) r.stopServiceGeneration(this,owned); } catch (Exception ignored) { } });
+        worker.execute(() -> {
+            long owned=ownedGeneration;
+            String networkName=r.network();
+            String wallet=BootstrapSyncState.activeWallet(getSharedPreferences("wallet",MODE_PRIVATE),networkName);
+            try {
+                if (owned >= 0) r.stopServiceGeneration(this,owned);
+                if (!r.alive()) BootstrapSyncState.rebindAfterStopped(this,networkName,wallet,r.shutdownProof());
+            } catch (Exception ignored) { /* An unverified stop leaves the completion marker pending. */ }
+        });
         worker.shutdown(); downloads.shutdownNow(); alerts.shutdownNow(); announcements.shutdownNow(); super.onDestroy();
     }
 }

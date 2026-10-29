@@ -76,6 +76,11 @@ public final class NativeRuntime {
     WalletSelection walletSelection() { return walletSelection; }
     void setSyncRequested(boolean requested) { synchronized (syncRequestLock) { syncRequested = requested; if (!requested) syncRequestOwner = null; } }
     void requestSync(Object owner) { synchronized (syncRequestLock) { syncRequestOwner = owner; syncRequested = true; } }
+    synchronized boolean tryRequestSync(Object owner) { synchronized (syncRequestLock) {
+        if (syncRequestOwner != null && syncRequestOwner != owner) return false;
+        syncRequestOwner = owner; syncRequested = true; return true;
+    } }
+    boolean ownsSyncRequest(Object owner) { synchronized (syncRequestLock) { return syncRequestOwner == owner; } }
     void clearSyncRequest(Object owner) { synchronized (syncRequestLock) { if (syncRequestOwner == owner) { syncRequested = false; syncRequestOwner = null; } } }
     synchronized void stopServiceGeneration(Object owner, long expected) throws Exception {
         synchronized (syncRequestLock) { if (syncRequestOwner != null && syncRequestOwner != owner) return; }
@@ -115,6 +120,7 @@ public final class NativeRuntime {
     public synchronized long generation() { return generation; }
     public synchronized void stopGeneration(long expected) throws Exception { if (generation == expected) stop(); }
     public synchronized void start() throws Exception {
+        if (!syncRequested) throw new IOException("Sync was stopped");
         SyncNetworkPolicy.State connection = SyncNetworkPolicy.read(context);
         if (!connection.allowed) throw new IOException(connection.reason);
         if (!MobileCorePolicy.syncPermitted(context)) throw new IOException("Node stopped while wallet is in background");
@@ -183,6 +189,7 @@ public final class NativeRuntime {
             pb.environment().put("BNT_PID_FILE", pidFile().getAbsolutePath());
             // Settings/file preparation may take time; do not spawn after a network handover.
             connection = SyncNetworkPolicy.read(context);
+            if (!syncRequested) throw new IOException("Sync was stopped");
             if (!connection.allowed) throw new IOException(connection.reason);
             if (!MobileCorePolicy.syncPermitted(context)) throw new IOException("Node stopped while wallet is in background");
             child = pb.start();

@@ -74,6 +74,31 @@ final class BootstrapSyncState {
         catch(Exception unreadable) { throw new IOException("Could not bind initial sync to the saved wallet",unreadable); }
         if(!saved.edit().putString(PREFIX+scope(network,wallet),id+"."+digest).commit())
             throw new IOException("Could not save initial sync completion");
+        synchronized(BootstrapSyncState.class){checkedPath=null;checkedDigest=null;}
         return true;
+    }
+    /** Preserve a verified completion across Core's routine re-encryption on stop. */
+    static boolean rebindAfterStopped(Context context,String network,String wallet,JSONObject proof) throws IOException {
+        NativeRuntime runtime=NativeRuntime.get(context);SharedPreferences saved=prefs(context);
+        String old=saved.getString(PREFIX+scope(network,wallet),"");
+        if(runtime.alive()||proof==null||!proofAllowsRebind(old,proof.optInt("version"),
+                proof.optString("wallet_id"),proof.optLong("chain_height",-1),
+                proof.optString("chain_hash",""))
+            ||!network.equals(runtime.network())||!wallet.equals(activeWallet(saved,network))
+            ||saved.contains("wallet-change."+network)||saved.contains("pending-send."+network))return false;
+        File file=new File(runtime.walletsDir(),wallet);
+        if(!file.isFile())return false;
+        String digest;
+        try { digest=WalletFileBinding.digest(file); }
+        catch(Exception unreadable) { throw new IOException("Could not bind saved wallet completion",unreadable); }
+        if(!saved.edit().putString(PREFIX+scope(network,wallet),old.substring(0,64)+"."+digest).commit())
+            throw new IOException("Could not preserve verified sync completion");
+        synchronized(BootstrapSyncState.class){checkedPath=null;checkedDigest=null;}
+        return true;
+    }
+    static boolean proofAllowsRebind(String old,int version,String proofID,long height,String hash) {
+        return old!=null&&old.matches("[0-9a-f]{64}\\.[0-9a-f]{64}")
+            &&version==1&&old.substring(0,64).equals(proofID)&&height>=0
+            &&hash!=null&&hash.matches("[0-9a-f]{64}");
     }
 }

@@ -63,6 +63,31 @@ Nine additional emulator checks inject an activation failure through an in-proce
 
 The `overview.png`, `receive.png` and `settings.png` screenshots in `screenshots/` are **design fixtures with synthetic wallet data**, clearly watermarked by the instrumentation test. They demonstrate layout and QR rendering, not live balances, synchronization or payment execution. `onboarding.png` shows the actual stopped app. The optional exact ARM core harness is documented in [scripts/ARM_CORE_TESTING.md](scripts/ARM_CORE_TESTING.md).
 
+## Wallet rescan and indicative price candidate
+
+The Settings **Rescan wallet** action now asks the authenticated local Core to
+rewind its saved wallet scan cursor and scan the local chain again. For a newly
+generated wallet, Core records a birth height only when a recent connected peer
+comparison confirms the tip and no chain catch-up is active. Rescan starts 100
+blocks before that height to cover permitted reorganizations. Restored,
+imported, older, and unconfirmed-tip wallets scan from genesis. The rewind is
+saved before Core acknowledges it; the wallet scan height and an incomplete
+status are shown in the app. This does not claim that the local chain is at the
+network tip. A locked wallet cannot scan outputs; background chain jobs can
+advance the chain, but discovering wallet outputs resumes after unlock. The
+existing bounded screen-off scan lease remains in place and a long first scan
+may need later unlocked sessions. The app does not store a password for
+unattended scanning.
+
+While a mainnet wallet is visible and unlocked on a permitted connection, the
+app requests the public SafeTrade `bntusdt` ticker roughly every ten seconds.
+It shows the exchange's last trade in **USDT** and an approximate available
+balance value. The ticker does not include a trade timestamp; fetch time is
+not trade time. The app sends no wallet balance, address, key, or identifier to
+the exchange. Polling stops when the activity leaves the foreground or the
+wallet locks, and failures back off. This feature has no funded-wallet or
+physical-device acceptance result yet.
+
 For Android-to-core transport integration, start the isolated ARM testnet core described in [scripts/ARM_CORE_TESTING.md](scripts/ARM_CORE_TESTING.md), leave its wallet unloaded, then run `scripts/test-android-transport.sh /readable/path/to/api.cookie 18392 ADB_SERIAL`. The target may also come from `ANDROID_SERIAL`; automatic discovery requires exactly one authorized device and otherwise refuses to proceed. This selects the optional `-PapiIntegration` runner, forwards loopback through `adb reverse`, provisions the token without logging it, creates an empty encrypted test wallet, checks status/authentication/balance/message signing, unloads it, and removes the copied token. Seven checks passed against the exact supplied ARM core on 2026-10-15. It does not test app-owned ARM service execution or a funded broadcast.
 
 
@@ -143,7 +168,9 @@ human before publication.
 
 **Node settings → Allow mobile data for sync** is available before opening a wallet; the same switch is in wallet Settings. It defaults to **off (Wi-Fi only)**. Turning it on also permits mobile data. The app shows the current default connection and monitors Android network changes, including when the wallet is in the background. It checks the active route's Wi-Fi/mobile transport and internet validation, rather than treating any nearby or connected Wi-Fi as the route in use. VPNs are accepted in Wi-Fi-only mode only when Android reports Wi-Fi without cellular underneath; unknown VPN routes wait for a verifiable connection.
 
-When a requested sync loses an allowed connection, the foreground service signals the owned Core to shut down, confirms it exits, and waits with a visible paused notification. It automatically starts Core when a permitted connection returns. Stop sync cancels the waiting session. The mobile Core can start offline; the app still gates peer traffic on the permitted network. Graceful shutdown may take several seconds; this preference is not an operating-system firewall or a guarantee of zero bytes during network handover.
+When a requested sync loses an allowed connection, the foreground service signals the owned Core to shut down, confirms it exits, and waits with a visible paused notification. It automatically starts Core when a permitted connection returns. Stop sync cancels the waiting session and scheduled chain checks. The mobile Core can start offline; the app still gates peer traffic on the permitted network. Graceful shutdown may take several seconds; this preference is not an operating-system firewall or a guarantee of zero bytes during network handover.
+
+In the isolated background-sync candidate, a user-started catch-up may continue after the app backgrounds until Core confirms a connected peer tip. Once the first wallet scan is complete, a loaded Core is stopped and restarted without loading the encrypted wallet before chain-only catch-up continues. The default setting requests best-effort chain checks from Android JobScheduler with a 15-minute minimum repeat interval after Core stops. Android may delay or interrupt jobs. The scheduled job persists across reboot and rechecks the saved Start/Stop choice and permitted network before starting Core; it does not start a foreground service at boot. A scheduled check never opens the encrypted wallet, so saved balances and payment alerts remain dated until the user opens and unlocks it. A large backlog may take several jobs to clear; repeated Core startup cost and battery use need physical measurement. Turning off scheduled background sync retains the existing continuous, user-started foreground service. This candidate has host-test coverage but no phone acceptance or release approval.
 
 An existing wallet file can be opened without a previously saved app snapshot. A separate short-lived helper built from the pinned Core wallet package authenticates the password and reads only saved display fields without starting DNS, P2P, a listener, sync, or broadcasting. The password passes through a private stdin pipe, not command arguments. Unsupported wallet formats and wrong passwords fail closed. Funded-wallet migration remains untested.
 

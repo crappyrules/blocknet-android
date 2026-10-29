@@ -15,6 +15,7 @@
     <string name="loc_a_later_check_was_attempted_7081640c" formatted="false">后来尝试过检查，但未能确认映射。</string>
     <string name="loc_a_native_wallet_for_zero_2d04f8eb" formatted="false">保护隐私资产的原生钱包。</string>
     <string name="loc_a_previous_send_has_an_733008e5" formatted="false">上一笔付款结果尚未确定。创建新交易前请先检查其状态。</string>
+    <string name="loc_a_requested_catch_up_can_751ac4dd" formatted="false">在允许的网络连接上，已启动的追赶同步可在熄屏后继续。核心程序确认已追上对等节点后会停止；随后 Android 会安排间隔至少 15 分钟的非精确定时区块链检查。后台检查不会解锁钱包。余额和收款提醒仍可能过时，直到您打开并解锁钱包。Android 可能延迟或停止检查；节电效果尚未测量。</string>
     <string name="loc_a_saved_full_address_never_f0a7f055" formatted="false">短名发生变化时，已保存的完整地址不会自动改变。上次检查结果来自 Blocknet ID HTTPS 服务，未经过独立认证。使用短名付款前会重新检查。在线解锁并使用允许的网络后，每个网络每天最多自动检查两个过期短名。</string>
     <string name="loc_a_send_is_awaiting_confirmation_4107560a" formatted="false">有一笔付款等待确认</string>
     <string name="loc_a_verified_entry_needs_a_6fdad8ad" formatted="false">已验证的条目需要短名</string>
@@ -48,6 +49,13 @@
     <string name="loc_android_notification_settings_dc3abdbd" formatted="false">Android 通知设置</string>
     <string name="loc_android_notifications_are_currently_blocke_c253ff12" formatted="false">Android 通知目前被阻止。请在系统设置中允许通知，以接收交易提醒。</string>
     <string name="loc_announcement_manifest_is_unavailable_39243806" formatted="false">公告清单不可用。</string>
+    <string name="loc_approx_1_s_usdt_available_a1fd5de9">可用余额约合 %1$s USDT · BNT/USDT 最近成交价 %2$s</string>
+    <string name="loc_approximate_usdt_value_unavailable_while_8e8696bc" formatted="false">钱包扫描期间无法估算 USDT 价值</string>
+    <string name="loc_approximate_value_unavailable_17cb27c1" formatted="false">暂时无法估算价值</string>
+    <string name="loc_approximate_value_unavailable_while_wallet_5285bdb3" formatted="false">钱包扫描期间无法估算价值</string>
+    <string name="loc_bnt_usdt_last_trade_1_056352a3">BNT/USDT 最近成交价 %1$s · 报价已过期（%2$s前获取）</string>
+    <string name="loc_bnt_usdt_last_trade_price_fd9fb2f2" formatted="false">正在获取 BNT/USDT 最近成交价…</string>
+    <string name="loc_bnt_usdt_price_unavailable_1_238a1479">BNT/USDT 价格不可用 · %1$s</string>
     <string name="loc_back_up_your_wallet_and_fa9e43d2" formatted="false">升级前请备份钱包并验证恢复方式。</string>
     <string name="loc_backup_exported_f75a67cf" formatted="false">备份已导出</string>
     <string name="loc_backup_imported_bd213a33" formatted="false">备份已导入</string>
@@ -76,9 +84,11 @@
     <string name="loc_cancel_19766ed6" formatted="false">取消</string>
     <string name="loc_cannot_read_selected_file_6e4f251c" formatted="false">无法读取所选文件</string>
     <string name="loc_cannot_write_to_selected_file_f3b4e592" formatted="false">无法写入所选文件</string>
+    <string name="loc_chain_catch_up_paused_open_4f9b9216" formatted="false">区块链追赶同步已暂停。打开钱包查看节点状态。</string>
     <string name="loc_chain_caught_up_open_wallet_ba755c34" formatted="false">区块链已追上。打开钱包以完成扫描。</string>
     <string name="loc_chain_height_cf1571b8" formatted="false">区块高度</string>
     <string name="loc_chain_height_1_s_f91f8774">区块高度：%1$s</string>
+    <string name="loc_chain_pause_failed_open_wallet_11bfe3c1" formatted="false">区块链同步暂停失败。打开钱包查看节点状态。</string>
     <string name="loc_chain_syncing_open_wallet_to_f8863ce2" formatted="false">区块链正在同步 · 打开钱包以完成扫描</string>
     <string name="loc_chain_1_s_2_s_d76cc509">区块高度：%1$s / %2$s 个区块</string>
     <string name="loc_chain_1_s_blocks_finding_42880734">区块高度：%1$s 个区块 · 正在查找网络目标</string>
@@ -181,7 +191,6 @@
     <string name="loc_ethernet_681e1209" formatted="false">以太网</string>
     <string name="loc_export_backup_d6dfd0f0" formatted="false">导出备份</string>
     <string name="loc_export_encrypted_backup_2d2c38e3" formatted="false">导出加密备份</string>
-    <string name="loc_first_or_restored_wallet_sync_006905d9" formatted="false">首次创建或恢复的钱包可在熄屏后继续同步，直到区块链和钱包扫描都追上。若 Android 停止进程，请重新打开并解锁钱包以继续。首次同步完成后，离开钱包会停止核心程序和后台收款提醒。追上链上状态前，已保存余额仍显示保存时间。节电效果尚未测量。</string>
     <string name="loc_first_sync_may_take_time_3799d4d1" formatted="false">首次同步可能需要较长时间。区块链增长时请留出存储空间。需要运行 Android 8 或更高版本的 64 位 ARM 设备。</string>
     <string name="loc_follow_phone_language_5b74c6f9" formatted="false">跟随手机语言</string>
     <string name="loc_free_app_storage_1_s_3a2c94ff">应用可用存储空间：%1$s</string>
@@ -201,6 +210,7 @@
     <string name="loc_incomplete_signed_shortname_response_29059e28" formatted="false">已签名短名响应不完整</string>
     <string name="loc_incorrect_wallet_password_or_damaged_325f194f" formatted="false">钱包密码错误，或已保存的视图已损坏。</string>
     <string name="loc_incorrect_wallet_password_or_damaged_5b618fe8" formatted="false">钱包密码错误，或钱包文件已损坏。</string>
+    <string name="loc_indicative_usdt_value_from_the_e586e043" formatted="false">根据 BNT/USDT 最近成交价估算的 USDT 价值</string>
     <string name="loc_initial_sync_pause_failed_open_a65f038b" formatted="false">首次同步暂停失败。打开钱包查看节点状态。</string>
     <string name="loc_initial_sync_state_could_not_a7414556" formatted="false">无法保存首次同步状态。打开钱包重试。</string>
     <string name="loc_initial_wallet_scan_and_chain_71fd4ee1" formatted="false">首次钱包扫描和区块链同步仍在继续</string>
@@ -363,6 +373,7 @@
     <string name="loc_remove_1_s_from_this_054b6f08">从此设备的地址簿移除 %1$s？</string>
     <string name="loc_repeat_password_b74070f9" formatted="false">再次输入密码</string>
     <string name="loc_rescan_ec4b3ecb" formatted="false">重新扫描</string>
+    <string name="loc_rescan_started_at_local_block_e30da49e">已从本地区块 %1$s 开始重新扫描。请留意节点扫描时的钱包高度。</string>
     <string name="loc_rescan_wallet_a8d3c715" formatted="false">重新扫描钱包</string>
     <string name="loc_rescan_wallet_88aed19e" formatted="false">要重新扫描钱包吗？</string>
     <string name="loc_resolve_payment_dd1a4b01" formatted="false">处理付款</string>
@@ -380,6 +391,7 @@
     <string name="loc_review_payment_80712e2f" formatted="false">检查付款详情</string>
     <string name="loc_review_this_payment_again_before_a06af684" formatted="false">付款前请重新检查付款详情</string>
     <string name="loc_review_this_payment_against_outgoing_b52612dd" formatted="false">处理未知结果前，请对照已发出的交易记录核对这笔付款。</string>
+    <string name="loc_safetrade_last_trade_is_indicative_ad036096" formatted="false">SafeTrade 最近成交价仅供参考；获取时间并非成交时间。</string>
     <string name="loc_save_1509f561" formatted="false">保存</string>
     <string name="loc_save_recipient_b8c80d41" formatted="false">保存收款人</string>
     <string name="loc_saved_1_s_is_not_ea9cf1ba">已保存的 %1$s 当前未经验证。使用完整地址。</string>
@@ -423,6 +435,8 @@
     <string name="loc_shortname_service_returned_http_1_f4791a35">短名服务返回 HTTP %1$s</string>
     <string name="loc_shortname_signature_verification_failed_a97e6463" formatted="false">短名签名验证失败</string>
     <string name="loc_shortnames_use_1_64_letters_607a2ae0" formatted="false">短名须为 1 至 64 个英文字母、数字、句点、连字符或下划线</string>
+    <string name="loc_show_bnt_balance_27d62d2e" formatted="false">显示 BNT 余额</string>
+    <string name="loc_show_approximate_usdt_value_05070405" formatted="false">显示约合 USDT 价值</string>
     <string name="loc_show_diagnostics_59560b2b" formatted="false">显示诊断信息</string>
     <string name="loc_show_recovery_phrase_93749012" formatted="false">显示助记词</string>
     <string name="loc_sign_0c9618e9" formatted="false">签名</string>
@@ -444,7 +458,6 @@
     <string name="loc_start_sync_2f51aea0" formatted="false">开始同步</string>
     <string name="loc_start_the_bundled_blocknet_core_8df1e910" formatted="false">启动内置 Blocknet 核心以打开钱包并连接网络。当前没有已保存的钱包视图。</string>
     <string name="loc_start_wallet_node_05a23f7e" formatted="false">启动钱包节点</string>
-    <string name="loc_stop_node_when_wallet_leaves_02e52a0e" formatted="false">钱包切到后台时停止节点</string>
     <string name="loc_stop_sync_b7379b6e" formatted="false">停止同步</string>
     <string name="loc_stopping_node_for_the_sync_c60b8e29" formatted="false">正在根据同步网络设置停止节点…</string>
     <string name="loc_strong_biometric_unlock_is_available_da662b41" formatted="false">可使用强生物识别解锁。</string>
@@ -467,10 +480,12 @@
     <string name="loc_sync_paused_the_active_connection_9a6927d0" formatted="false">同步已暂停：当前连接尚未验证互联网访问。请先完成网络登录。</string>
     <string name="loc_sync_stopped_open_wallet_to_627c2d4c" formatted="false">同步已停止。请打开钱包查看节点状态。</string>
     <string name="loc_sync_target_1_s_391f34bc">同步目标：%1$s</string>
+    <string name="loc_sync_was_stopped_8fb1f178" formatted="false">同步已停止</string>
     <string name="loc_sync_will_resume_when_a_49576ad0" formatted="false">有允许的网络后将恢复同步。当前没有已保存的钱包视图；请先在线打开一次钱包以建立视图。</string>
     <string name="loc_syncing_no_bdf438ba" formatted="false">同步中：否</string>
     <string name="loc_syncing_yes_1b4e3cf1" formatted="false">同步中：是</string>
     <string name="loc_to_c3bd7d9e" formatted="false">收款方</string>
+    <string name="loc_tap_balance_to_show_approximate_9cb9010a" formatted="false">轻触余额以显示约合 USDT 价值</string>
     <string name="loc_testnet_0493c829" formatted="false">测试网</string>
     <string name="loc_that_shortname_currently_points_to_80a998a2" formatted="false">该短名目前指向其他地址。已保存地址未改变。</string>
     <string name="loc_the_bundled_core_runs_locally_5b1a80d4" formatted="false">内置核心在前台服务中本地运行。区块链同步会使用网络流量、存储空间和电量。</string>
@@ -478,6 +493,7 @@
     <string name="loc_the_current_1_s_mapping_f26fff9e">无法核对当前 $%1$s 的映射：%2$s。地址簿仍保存 %3$s。</string>
     <string name="loc_the_estimated_fee_increased_review_5ae01332" formatted="false">预估手续费增加了。付款前请重新检查详情。</string>
     <string name="loc_the_expected_apk_asset_is_bc22c49a" formatted="false">预期的 APK 文件无效</string>
+    <string name="loc_the_last_scheduled_chain_check_bd881ef6" formatted="false">上次定时区块链检查未能获取核心节点状态。Android 会重试；打开钱包可查看节点日志。</string>
     <string name="loc_the_network_changed_unlock_the_6bbcb22c" formatted="false">网络已变化。请重新解锁所选钱包。</string>
     <string name="loc_the_node_changed_while_checkpoints_ae7266ae" formatted="false">刷新检查点期间节点已变化。请检查当前状态。</string>
     <string name="loc_the_node_is_loading_unlock_f05f63ac" formatted="false">节点正在加载。就绪后请解锁。</string>
@@ -496,6 +512,7 @@
     <string name="loc_this_qr_code_is_not_41aa17e1" formatted="false">此二维码不是受支持的 Blocknet 付款请求。</string>
     <string name="loc_this_address_is_already_in_4b0176dd" formatted="false">此地址已在地址簿中</string>
     <string name="loc_this_build_has_no_offline_802a4bc1" formatted="false">此版本没有离线钱包读取器。</string>
+    <string name="loc_this_clears_discovered_outputs_from_6b94af3c" formatted="false">这将从安全的扫描起点清除已发现的输出并重新扫描本地区块链。缺失的区块或锁定的钱包可能延迟完成。</string>
     <string name="loc_this_opens_the_official_release_71bec94f" formatted="false">这将在浏览器中打开官方发布页面。钱包不会在那里下载、验证或安装 APK。</string>
     <string name="loc_this_shortname_does_not_resolve_5dfe4130" formatted="false">此短名未解析到当前钱包地址</string>
     <string name="loc_this_shortname_is_already_in_b34c88ac" formatted="false">此短名已在地址簿中</string>
@@ -531,6 +548,7 @@
     <string name="loc_use_password_2e1913a6" formatted="false">使用密码</string>
     <string name="loc_use_recovery_word_1_s_ff833b84">使用助记词 %1$s</string>
     <string name="loc_use_saved_address_e865d589" formatted="false">使用已保存地址</string>
+    <string name="loc_use_scheduled_background_chain_sync_fa100f85" formatted="false">使用定时后台区块链同步</string>
     <string name="loc_use_the_shortname_in_one_94b08bc1" formatted="false">请只在一个输入框中填写短名</string>
     <string name="loc_use_your_wallet_password_instead_13f12dc8" formatted="false">请改用钱包密码。</string>
     <string name="loc_use_your_wallet_password_to_accd28fb" formatted="false">输入钱包密码以打开加密钱包文件中的上次状态。余额和交易记录可能已变化；付款需要重新连接并解锁节点。</string>
@@ -586,6 +604,10 @@
     <string name="loc_wallet_password_is_too_long_611b7159" formatted="false">钱包密码过长</string>
     <string name="loc_wallet_password_length_is_unsupported_2efff226" formatted="false">不支持此钱包密码长度</string>
     <string name="loc_wallet_password_length_is_unsupported_a99000dd" formatted="false">钱包密码长度不受支持。</string>
+    <string name="loc_wallet_rescan_incomplete_1_s_f212556b">钱包重新扫描未完成：%1$s。同步可用时解锁并重试。</string>
+    <string name="loc_wallet_rescan_reached_the_local_62740fbc" formatted="false">钱包已扫描到本地区块链顶端，网络同步可能仍在继续。</string>
+    <string name="loc_wallet_rescan_block_1_s_31402dd1">钱包重新扫描：本地区块 %1$s / %2$s</string>
+    <string name="loc_wallet_scan_block_1_s_ea07c946">钱包扫描：本地区块 %1$s / %2$s</string>
     <string name="loc_welcome_back_dfdbca16" formatted="false">欢迎回来。</string>
     <string name="loc_wi_fi_337253f2" formatted="false">Wi-Fi</string>
     <string name="loc_wi_fi_and_mobile_data_ddb1c21a" formatted="false">Wi-Fi 和移动数据</string>

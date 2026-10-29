@@ -1,8 +1,8 @@
 plugins { id 'com.android.application' }
 
-// Owner-signed test successor to v1.0.0-preview.6 (Android versionCode 6).
-def candidateReleaseTag = 'v1.0.0-preview.7'
-def candidateVersionCode = 7
+// Owner-signed test successor to v1.0.0-preview.7 (Android versionCode 7).
+def candidateReleaseTag = 'v1.0.0-preview.8'
+def candidateVersionCode = 8
 
 // Release packages require an owner-provided key and an explicitly pinned certificate.
 // Debug builds remain available for local testing; neither can be published as an update.
@@ -27,7 +27,7 @@ gradle.taskGraph.whenReady { graph ->
 }
 def releaseSigning = [:]
 if (releaseTaskRequested) {
-    if (candidateVersionCode <= 6 || !(candidateReleaseTag ==~ /v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+/))
+    if (candidateVersionCode <= 7 || !(candidateReleaseTag ==~ /v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+/))
         throw new GradleException('Release metadata must advance beyond the published preview')
     if (!unsignedReleaseArtifact) {
         def names = ['BLOCKNET_RELEASE_KEYSTORE', 'BLOCKNET_RELEASE_STORE_PASSWORD',
@@ -123,6 +123,7 @@ def walletFollowupPatch = rootProject.file('core-patches/0008-core-wallet-send-r
 def walletOverflowPatch = rootProject.file('core-patches/0009-core-wallet-notification-overflow.patch')
 def bootstrapPatch = rootProject.file('core-patches/0010-bootstrap-progress.patch')
 def fetchedScanPatch = rootProject.file('core-patches/0011-fetched-block-wallet-scan.patch')
+def birthRescanPatch = rootProject.file('core-patches/0012-wallet-birth-rescan.patch')
 def bootstrapQaPatch = rootProject.file('qa/controlled-peer.patch')
 def offlineViewArgument = providers.gradleProperty('offlineWalletViewDir').orNull
 def offlineViewDirectory = offlineViewArgument == null ? null : new File(offlineViewArgument)
@@ -136,14 +137,15 @@ def validateActivity = {
                     new File(activityDirectory, 'android-cgo-link-flags.patch'),
                     new File(activityDirectory, 'onchain-announcement-scan.patch')]
     if (coreMobileEnabled) required += [mobilePatch, new File(activityDirectory, 'mobile-client-policy.patch'),
-        walletPersistencePatch, walletScanPatch, walletReadinessPatch, walletFollowupPatch, walletOverflowPatch, bootstrapPatch, fetchedScanPatch,
+        walletPersistencePatch, walletScanPatch, walletReadinessPatch, walletFollowupPatch, walletOverflowPatch, bootstrapPatch, fetchedScanPatch, birthRescanPatch,
         new File(activityDirectory, walletPersistencePatch.name),
         new File(activityDirectory, walletScanPatch.name),
         new File(activityDirectory, walletReadinessPatch.name),
         new File(activityDirectory, walletFollowupPatch.name),
         new File(activityDirectory, walletOverflowPatch.name),
         new File(activityDirectory, bootstrapPatch.name),
-        new File(activityDirectory, fetchedScanPatch.name)]
+        new File(activityDirectory, fetchedScanPatch.name),
+        new File(activityDirectory, birthRescanPatch.name)]
     if (bootstrapQaEnabled) required += [bootstrapQaPatch,
         new File(activityDirectory, 'controlled-peer.patch'),
         new File(activityDirectory, 'reviewed-build-provenance.json')]
@@ -167,7 +169,8 @@ def validateActivity = {
         wallet_followup_patch_sha256: walletFollowupPatch,
         wallet_notification_overflow_patch_sha256: walletOverflowPatch,
         bootstrap_progress_patch_sha256: bootstrapPatch,
-        fetched_block_wallet_scan_patch_sha256: fetchedScanPatch]
+        fetched_block_wallet_scan_patch_sha256: fetchedScanPatch,
+        wallet_birth_rescan_patch_sha256: birthRescanPatch]
     if (bootstrapQaEnabled) expected += [qa_peer_only_patch_sha256: bootstrapQaPatch,
         reviewed_base_provenance_sha256: new File(activityDirectory, 'reviewed-build-provenance.json')]
     expected.each { field, input ->
@@ -179,7 +182,7 @@ def validateActivity = {
         sha256(new File(activityDirectory, 'onchain-announcement-scan.patch')) != provenance.announcement_scan_patch_sha256 ||
         sha256(new File(activityDirectory, 'Cargo.lock')) != provenance.cargo_lock_sha256)
         throw new GradleException('Experimental build patch copies differ from the reviewed source patches')
-    def normalPatchOrder = ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', walletPersistencePatch.name, walletScanPatch.name, walletReadinessPatch.name, walletFollowupPatch.name, walletOverflowPatch.name, bootstrapPatch.name, fetchedScanPatch.name]
+    def normalPatchOrder = ['0001-locked-wallet-activity.patch', '0002-android-cgo-link-flags.patch', '0003-onchain-announcement-scan.patch', '0004-mobile-client-policy.patch', walletPersistencePatch.name, walletScanPatch.name, walletReadinessPatch.name, walletFollowupPatch.name, walletOverflowPatch.name, bootstrapPatch.name, fetchedScanPatch.name, birthRescanPatch.name]
     if (coreMobileEnabled && (provenance.mobile_client_capability != 1 ||
         provenance.patch_order != (bootstrapQaEnabled ? normalPatchOrder + ['qa/controlled-peer.patch'] : normalPatchOrder) ||
         sha256(new File(activityDirectory, 'mobile-client-policy.patch')) != provenance.mobile_client_patch_sha256 ||
@@ -189,7 +192,8 @@ def validateActivity = {
         sha256(new File(activityDirectory, walletFollowupPatch.name)) != provenance.wallet_followup_patch_sha256 ||
         sha256(new File(activityDirectory, walletOverflowPatch.name)) != provenance.wallet_notification_overflow_patch_sha256 ||
         sha256(new File(activityDirectory, bootstrapPatch.name)) != provenance.bootstrap_progress_patch_sha256 ||
-        sha256(new File(activityDirectory, fetchedScanPatch.name)) != provenance.fetched_block_wallet_scan_patch_sha256))
+        sha256(new File(activityDirectory, fetchedScanPatch.name)) != provenance.fetched_block_wallet_scan_patch_sha256 ||
+        sha256(new File(activityDirectory, birthRescanPatch.name)) != provenance.wallet_birth_rescan_patch_sha256))
         throw new GradleException('Mobile Core capability or ordered patch provenance is invalid')
     if (bootstrapQaEnabled) {
         def base = new groovy.json.JsonSlurper().parse(new File(activityDirectory, 'reviewed-build-provenance.json'))

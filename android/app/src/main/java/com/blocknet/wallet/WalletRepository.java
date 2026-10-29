@@ -41,6 +41,8 @@ public final class WalletRepository {
         public long savedAt;
         public String connectionLabel = "", syncPolicyMessage = "";
         public String checkpointWarning = "", syncPercent = "";
+        public String rescanStatus = "idle", rescanError = "";
+        public long rescanFrom;
         public String address = "", network = "mainnet", nodeMessage = "Node stopped";
         public JSONArray history = new JSONArray(), sends = new JSONArray();
         public JSONObject status = new JSONObject();
@@ -85,6 +87,12 @@ public final class WalletRepository {
             s.loaded = true; s.scanning = balance.optBoolean("scanning");
             s.spendable = balance.optLong("spendable"); s.pending = balance.optLong("pending") + balance.optLong("pending_unconfirmed");
             s.walletHeight = balance.optLong("synced_height");
+            try {
+                JSONObject rescan=api.get("/api/wallet/rescan");
+                s.rescanStatus=rescan.optString("status","idle");
+                s.rescanFrom=rescan.optLong("from_height");
+                s.rescanError=rescan.optString("error","");
+            } catch(Exception unavailable) { s.rescanError="Rescan progress is unavailable from the local node"; }
             JSONObject address = api.get("/api/wallet/address");
             s.address = address.getString("address"); s.viewOnly = address.optBoolean("view_only");
             s.history = historyPage(0).optJSONArray("outputs");
@@ -274,10 +282,17 @@ public final class WalletRepository {
         if (runtime.syncRequested() || runtime.alive()) context.startForegroundService(new Intent(context,CoreService.class).setAction(CoreService.RECHECK));
     }
     public synchronized void stopNode() throws Exception {
+        String stoppedNetwork=runtime.network(),stoppedWallet=activeWallet();
         MobileCorePolicy.setRequested(context,false);
+        // Cancel the persisted job before waiting for Core to stop; a failed
+        // shutdown must not leave periodic wakeups after the user's Stop.
+        try { BackgroundChainSync.reconcileSchedule(context); } catch (RuntimeException ignored) { }
         runtime.setSyncRequested(false);
         runtime.cancelCheckpointRefresh();
-        context.stopService(new Intent(context, CoreService.class)); runtime.stop(); preview = null;
+        context.stopService(new Intent(context, CoreService.class)); runtime.stop();
+        try { BootstrapSyncState.rebindAfterStopped(context,stoppedNetwork,stoppedWallet,runtime.shutdownProof()); }
+        catch (Exception ignored) { /* A missing receipt leaves this wallet pending, never falsely complete. */ }
+        preview = null;
     }
     public synchronized JSONObject refreshCheckpoints() throws Exception { return runtime.refreshCheckpoints(); }
     public String network() { return runtime.network(); }
@@ -474,7 +489,16 @@ public final class WalletRepository {
         return error.status == 503 && "no wallet loaded".equals(error.getMessage());
     }
     public String seed(String password) throws Exception { requireKnownWallet(); return api.post("/api/wallet/seed",new JSONObject().put("password",password)).getString("mnemonic"); }
-    public void rescan() throws Exception { requireKnownWallet(); api.post("/api/wallet/sync",null); }
+    public JSONObject rescan() throws Exception {
+        requireKnownWallet();requireSyncConnection();
+        // Mark the per-wallet scan incomplete before Core rewinds its saved
+        // cursor, so a service stop cannot certify the pre-rescan state.
+        BootstrapSyncState.begin(context,network(),activeWallet());
+        JSONObject response=api.post("/api/wallet/rescan",null);
+        if(!"rescanning".equals(response.optString("status")))
+            throw new IOException("The node did not start a full wallet rescan");
+        return response;
+    }
     public JSONObject sign(String message) throws Exception { requireKnownWallet(); return api.post("/api/wallet/sign",new JSONObject().put("message",message)); }
     public JSONObject verify(String address,String message,String signature) throws Exception { return api.post("/api/verify",new JSONObject().put("address",address).put("message",message).put("signature",signature)); }
     /** Core parses the checksum and both Ristretto public keys before it checks the dummy signature. */

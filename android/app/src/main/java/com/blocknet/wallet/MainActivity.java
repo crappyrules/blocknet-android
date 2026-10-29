@@ -35,17 +35,22 @@ public final class MainActivity extends Activity {
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private final ExecutorService updateWorker=Executors.newSingleThreadExecutor();
     private final ExecutorService bookWorker=Executors.newSingleThreadExecutor();
+    private SafeTradePrice pricePoller;
+    private SafeTradePrice.Quote marketQuote;
+    private String marketError="",marketScope="";
+    private boolean showUsdtBalance;
     private android.net.ConnectivityManager.NetworkCallback networkWatcher;
     private final Handler main=new Handler(Looper.getMainLooper());
     private final Set<AlertDialog> sensitiveDialogs=new HashSet<>(),openDialogs=new HashSet<>();
     private final Runnable autoLock=()->{if(!this.destroyed)worker.execute(()->{try{repo.lock();}catch(Exception ignored){}});};
-    private WalletRepository.Snapshot snapshot;
+    private volatile WalletRepository.Snapshot snapshot;
     private LinearLayout shell, body, nav;
     private ScrollView pageScroll;
     private String renderedViewportKey="";
     private long viewportEpoch;
     private boolean scrollTouchActive, deferredPassiveRender;
-    private TextView nodeBadge,balanceText,pendingText,chainText,errorText;
+    private TextView nodeBadge,pendingText,chainText,errorText,marketText;
+    private BalanceToggleView balanceDisplay;
     private TextView settingsChainHeight,settingsWalletHeight,settingsPeers;
     private final Set<TextView> syncStatusViews=new HashSet<>(),checkpointStatusViews=new HashSet<>(),networkPolicyViews=new HashSet<>();
     private final Set<Switch> mobileDataSwitches=new HashSet<>();
@@ -88,6 +93,14 @@ public final class MainActivity extends Activity {
         super.onCreate(saved);getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         getWindow().setStatusBarColor(WalletTheme.BG);getWindow().setNavigationBarColor(WalletTheme.BG);
         ui=new WalletTheme(this);repo=new WalletRepository(this);addressBook=new AddressBook(this);biometricVault=new BiometricVault(this);
+        pricePoller=new SafeTradePrice(this,()->resumed&&!destroyed&&snapshot!=null&&snapshot.loaded
+            &&!snapshot.locked&&!snapshot.cached&&repo.offlineSessionAuthorized(),(quote,error)->{
+            if(!resumed||destroyed||snapshot==null||snapshot.locked||!snapshot.loaded||snapshot.cached)return;
+            if(quote!=null)marketQuote=quote;
+            marketError=error;
+            updateMarketText();
+            updateBalanceDisplay();
+        });
         updateWorker.execute(()->{try{SoftwareUpdateChecker.schedule(this);}catch(RuntimeException ignored){}});
         if(Build.VERSION.SDK_INT>=33)getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,()->{if(!page.equals("overview")){page="overview";render();}else finish();});
         if(saved!=null){page=saved.getString("page","overview");pendingImportName=saved.getString("importName");}
@@ -128,8 +141,8 @@ public final class MainActivity extends Activity {
         }
         main.removeCallbacks(poll);main.postDelayed(poll,5000);refresh(false);checkUpdates(false);
     }
-    @Override protected void onPause(){super.onPause();resumed=false;scrollTouchActive=false;main.removeCallbacks(poll);}
-    @Override protected void onDestroy(){cancelBiometricFlow(true);if(!isChangingConfigurations())worker.execute(()->{try{repo.lock();}catch(Exception ignored){}});destroyed=true;main.removeCallbacksAndMessages(null);worker.shutdown();updateWorker.shutdown();bookWorker.shutdownNow();super.onDestroy();}
+    @Override protected void onPause(){super.onPause();resumed=false;pricePoller.setEnabled(false);scrollTouchActive=false;main.removeCallbacks(poll);}
+    @Override protected void onDestroy(){cancelBiometricFlow(true);pricePoller.close();if(!isChangingConfigurations())worker.execute(()->{try{repo.lock();}catch(Exception ignored){}});destroyed=true;main.removeCallbacksAndMessages(null);worker.shutdown();updateWorker.shutdown();bookWorker.shutdownNow();super.onDestroy();}
     @Override protected void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);state.putString("page",page);state.putString("importName",pendingImportName);state.putString("payment",paymentText);}
     @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);paymentText=
         "com.blocknet.wallet".equals(BuildConfig.APPLICATION_ID)?intent.getDataString():null;
@@ -225,7 +238,7 @@ public final class MainActivity extends Activity {
     private void mutate(String label,Work<?> work){task(label,()->{work.run();return repo.refresh();},next->{acceptSnapshot(next);render();});}
     private void showError(String label,Exception error){String message=error.getMessage();if(message==null||message.trim().isEmpty())message="Operation could not be completed. Please try again.";if(errorText!=null){errorText.setText(LocalizedText.get(this,label)+": "+LocalizedText.get(this,message));errorText.setVisibility(View.VISIBLE);}new LocalizedText.Dialog(this).setTitle(label).setMessage(message).setPositiveButton("OK",null).show();}
     private void route(String destination){if(busy)return;page=destination;render();}
-    private void lockWallet(){cancelBookLookups();mutate("Lock wallet",()->{repo.lock();return null;});}
+    private void lockWallet(){cancelBookLookups();pricePoller.setEnabled(false);marketQuote=null;showUsdtBalance=false;mutate("Lock wallet",()->{repo.lock();return null;});}
     private void passiveRender(){
         if(WalletViewportPolicy.shouldRender(false,getCurrentFocus() instanceof EditText,
             scrollTouchActive,true,deferredPassiveRender)){deferredPassiveRender=false;render();}
@@ -245,7 +258,7 @@ public final class MainActivity extends Activity {
         }
         final String restoreAnchor=anchor;final int restoreOffset=anchorOffset;
         long restoreEpoch=++viewportEpoch;
-        generation++;rendering=true;balanceText=pendingText=chainText=null;settingsChainHeight=settingsWalletHeight=settingsPeers=null;sendButton=null;receiveQr=null;
+        generation++;rendering=true;balanceDisplay=null;pendingText=chainText=marketText=null;settingsChainHeight=settingsWalletHeight=settingsPeers=null;sendButton=null;receiveQr=null;
         if(!page.equals("receive")||snapshot==null||!snapshot.loaded||snapshot.locked||snapshot.cached){receiveEntryKey="";receiveVerificationToken++;shortnameChecking=false;}
         if(snapshot!=null&&snapshot.locked)for(AlertDialog d:new ArrayList<>(openDialogs))d.dismiss();
         String key=repo.network()+"/"+repo.activeWallet();if(!key.equals(historyWalletKey)){historyWalletKey=key;olderOutputs=new JSONArray();olderSends=new JSONArray();outputOffset=sendOffset=100;moreOutputs=snapshot!=null&&snapshot.history!=null&&snapshot.history.length()>=100;moreSends=snapshot!=null&&snapshot.sends!=null&&snapshot.sends.length()>=100;}
@@ -309,9 +322,11 @@ public final class MainActivity extends Activity {
     }
     private void updateStatus(){
         if(snapshot==null)return;
+        reconcilePrice();
         nodeBadge.setText(snapshot.cached?"◌ saved view":!snapshot.running?(snapshot.syncRequested?"◌ sync paused":"○ offline"):snapshot.syncRequested&&!snapshot.syncAllowed?"◌ stopping":snapshot.status.length()==0?"◌ starting":snapshot.syncing?"◌ syncing":"● node online");nodeBadge.setTextColor(snapshot.running&&!snapshot.cached?WalletTheme.LIME:WalletTheme.MUTED);
         if(sendButton!=null)sendButton.setEnabled(!busy&&!snapshot.cached&&!snapshot.viewOnly&&!snapshot.scanning&&!snapshot.syncing&&snapshot.syncAllowed);
-        if(balanceText!=null)balanceText.setText(snapshot.scanning?"scanning…":coins(snapshot.spendable));
+        updateMarketText();
+        updateBalanceDisplay();
         if(pendingText!=null)pendingText.setText(snapshot.scanning?"Discovering wallet outputs":"pending  "+coins(snapshot.pending)+" BNT");
         for(TextView text:new ArrayList<>(syncStatusViews))text.setText(syncProgressText());
         for(TextView text:new ArrayList<>(checkpointStatusViews)){text.setText(checkpointStatusText());text.setTextColor((snapshot.checkpointWarning==null||snapshot.checkpointWarning.isEmpty())?WalletTheme.MUTED:WalletTheme.ERROR);}
@@ -328,6 +343,38 @@ public final class MainActivity extends Activity {
         if(settingsWalletHeight!=null)settingsWalletHeight.setText(Long.toString(snapshot.walletHeight));
         if(settingsPeers!=null)settingsPeers.setText(Integer.toString(snapshot.peers));
     }
+    private void reconcilePrice(){
+        String scope=snapshot.network+"/"+repo.activeWallet();
+        if(!scope.equals(marketScope)){marketScope=scope;marketQuote=null;marketError="";showUsdtBalance=false;}
+        boolean eligible=resumed&&!destroyed&&snapshot.loaded&&!snapshot.locked&&!snapshot.cached
+            &&"mainnet".equals(snapshot.network)&&repo.offlineSessionAuthorized()
+            &&MobileCorePolicy.permitted(this)&&SyncNetworkPolicy.allowedNetwork(this)!=null;
+        pricePoller.setEnabled(eligible);
+        if(!eligible){marketQuote=null;marketError="";showUsdtBalance=false;}
+    }
+    private void updateBalanceDisplay(){
+        if(balanceDisplay==null||snapshot==null)return;
+        boolean liveMainnet=snapshot.loaded&&!snapshot.locked&&!snapshot.cached
+            &&"mainnet".equals(snapshot.network)&&resumed&&repo.offlineSessionAuthorized();
+        long age=marketQuote==null?-1:android.os.SystemClock.elapsedRealtime()-marketQuote.fetchedElapsed;
+        BalanceValue value=BalanceValue.show(snapshot.spendable,snapshot.scanning,liveMainnet,
+            showUsdtBalance,marketQuote==null?null:marketQuote.last,age,marketError);
+        balanceDisplay.show(value);
+    }
+    private void updateMarketText(){
+        if(marketText==null||snapshot==null)return;
+        if(snapshot.scanning){marketText.setText(LocalizedText.get(this,"Approximate USDT value unavailable while wallet scans"));return;}
+        if(marketQuote==null){marketText.setText(LocalizedText.get(this,
+            marketError.isEmpty()?"BNT/USDT last trade price loading…":"BNT/USDT price unavailable · "+marketError));return;}
+        long age=android.os.SystemClock.elapsedRealtime()-marketQuote.fetchedElapsed;
+        String price=marketQuote.last.stripTrailingZeros().toPlainString();
+        if(age>30_000||!marketError.isEmpty()){
+            marketText.setText(LocalizedText.get(this,"BNT/USDT last trade "+price+" · stale price (fetched "+Math.max(0,age/1000)+"s ago)"));
+            return;
+        }
+        String estimate=marketQuote.estimatedUsdt(snapshot.spendable).setScale(2,java.math.RoundingMode.HALF_UP).toPlainString();
+        marketText.setText(LocalizedText.get(this,"Approx. "+estimate+" USDT available · BNT/USDT last trade "+price));
+    }
     private String syncProgressText(){
         if(snapshot==null)return "Waiting for node status…";
         if(snapshot.cached)return LocalizedText.get(this,snapshot.chainHeightKnown?"Last saved chain height: "+snapshot.height+" · no current sync status":
@@ -337,6 +384,16 @@ public final class MainActivity extends Activity {
         else progress+=" blocks · finding network target";
         progress=LocalizedText.get(this,progress);
         if(snapshot.syncPercent!=null&&!snapshot.syncPercent.trim().isEmpty()){String percent=snapshot.syncPercent.trim();progress+=" · "+percent+(percent.endsWith("%")?"":"%");}
+        if(snapshot.loaded&&!snapshot.locked){
+            if("scanning".equals(snapshot.rescanStatus))progress+="\n"+LocalizedText.get(this,
+                "Wallet rescan: block "+snapshot.walletHeight+" / "+snapshot.height+" on the local chain");
+            else if("incomplete".equals(snapshot.rescanStatus))progress+="\n"+LocalizedText.get(this,
+                "Wallet rescan incomplete: "+snapshot.rescanError+". Unlock and retry when sync is available.");
+            else if(snapshot.scanning)progress+="\n"+LocalizedText.get(this,
+                "Wallet scan: block "+snapshot.walletHeight+" / "+snapshot.height+" on the local chain");
+            else if("local_scan_complete".equals(snapshot.rescanStatus))progress+="\n"+LocalizedText.get(this,
+                "Wallet rescan reached the local chain tip. Network sync may still continue.");
+        }
         return progress+(snapshot.syncing?LocalizedText.get(this,"\nSyncing with the network…"):"");
     }
     private String checkpointStatusText(){
@@ -410,7 +467,7 @@ public final class MainActivity extends Activity {
     private void overview(){
         SoftwareUpdateChecker.Release available=new SoftwareUpdateChecker(this).saved();
         if(available!=null){LinearLayout notice=ui.card();notice.addView(ui.text((available.signedAnnouncement?"Signed on-chain release notice: ":"Unverified GitHub preview listing: ")+available.tag,13,WalletTheme.LIME));notice.addView(ui.button("View update",false,()->route("settings")));body.addView(notice);}
-        ui.section(body,"your wallet");LinearLayout balance=ui.card();balance.addView(ui.text(snapshot.cached?"LAST SAVED BALANCE":snapshot.viewOnly?"VIEW-ONLY · AVAILABLE":"AVAILABLE BALANCE",11,WalletTheme.MUTED));balanceText=ui.text(coins(snapshot.spendable),36,WalletTheme.TEXT);balanceText.setSingleLine(true);balanceText.setAutoSizeTextTypeUniformWithConfiguration(16,36,1,android.util.TypedValue.COMPLEX_UNIT_SP);balance.addView(balanceText);balance.addView(ui.text("BNT",15,WalletTheme.LIME));pendingText=ui.text("",12,WalletTheme.MUTED);balance.addView(pendingText);
+        ui.section(body,"your wallet");LinearLayout balance=ui.card();balance.addView(ui.text(snapshot.cached?"LAST SAVED BALANCE":snapshot.viewOnly?"VIEW-ONLY · AVAILABLE":"AVAILABLE BALANCE",11,WalletTheme.MUTED));balanceDisplay=new BalanceToggleView(ui,()->{if(snapshot!=null&&snapshot.loaded&&!snapshot.locked&&!snapshot.cached&&"mainnet".equals(snapshot.network)&&resumed){showUsdtBalance=!showUsdtBalance;updateBalanceDisplay();}});balance.addView(balanceDisplay.row);balance.addView(balanceDisplay.hint);pendingText=ui.text("",12,WalletTheme.MUTED);balance.addView(pendingText);if(!snapshot.cached&&"mainnet".equals(snapshot.network)){marketText=ui.text("BNT/USDT last trade price loading…",12,WalletTheme.MUTED);balance.addView(marketText);balance.addView(ui.text("SafeTrade last trade is indicative; fetch time is not trade time.",11,WalletTheme.MUTED));}
         LinearLayout actions=ui.row();Button send=ui.button("↗ Send",true,this::showSend);sendButton=send;send.setEnabled(!snapshot.viewOnly&&!snapshot.scanning&&!snapshot.syncing);actions.addView(send,new LinearLayout.LayoutParams(0,-2,1));View gap=new View(this);actions.addView(gap,new LinearLayout.LayoutParams(ui.dp(12),1));actions.addView(ui.button("↙ Receive",false,()->route("receive")),new LinearLayout.LayoutParams(0,-2,1));balance.addView(actions);body.addView(balance);
         body.addView(ui.button("Address book",false,()->route("addressbook")));
         if(!snapshot.cached&&!repo.isBackupComplete()&&!snapshot.viewOnly){LinearLayout warning=ui.card();warning.addView(ui.text("# protect your wallet",14,WalletTheme.ERROR));warning.addView(ui.text("Verify recovery before changing phones or replacing this app. Imported-key wallets have no phrase; keep the original keys or an encrypted backup and its password.",13,WalletTheme.MUTED));warning.addView(ui.button("Check recovery phrase",false,this::revealSeed));warning.addView(ui.button("Export encrypted backup",false,this::exportWallet));body.addView(warning);}
@@ -751,7 +808,10 @@ public final class MainActivity extends Activity {
         languageSection();
         if(snapshot.cached){ui.section(body,"wallet & security");LinearLayout wallet=ui.card();wallet.addView(ui.rawText(repo.activeWallet(),16,WalletTheme.TEXT));wallet.addView(ui.text("Last saved view · encrypted local wallet",12,WalletTheme.MUTED));wallet.addView(ui.button("Address book",false,()->route("addressbook")));wallet.addView(ui.button("Switch wallet",false,this::chooseWallet));wallet.addView(ui.button("Lock wallet",false,this::lockWallet));body.addView(wallet);ui.section(body,"node");LinearLayout node=ui.card();networkPolicyStatus(node);mobileDataSetting(node);node.addView(syncRunButton(()->{}));node.addView(ui.button("Node settings & diagnostics",false,this::nodeSettings));body.addView(node);updateSection();return;}
         ui.section(body,"wallet & security");LinearLayout wallet=ui.card();wallet.addView(ui.rawText(repo.activeWallet(),16,WalletTheme.TEXT));wallet.addView(ui.text(snapshot.viewOnly?"View-only wallet":"Encrypted local wallet",12,WalletTheme.MUTED));wallet.addView(ui.button("Address book",false,()->route("addressbook")));wallet.addView(ui.button("Switch / add wallet",false,this::chooseWallet));biometricSetting(wallet);wallet.addView(ui.button("Export encrypted backup",false,this::exportWallet));if(!snapshot.viewOnly)wallet.addView(ui.button("Show recovery phrase",false,this::revealSeed));wallet.addView(ui.button("Lock wallet",false,this::lockWallet));body.addView(wallet);
-        ui.section(body,"node");LinearLayout node=ui.card();ui.line(node,"Network",snapshot.network);settingsChainHeight=ui.line(node,"Chain height",Long.toString(snapshot.height));settingsWalletHeight=ui.line(node,"Wallet height",Long.toString(snapshot.walletHeight));settingsPeers=ui.line(node,"Peers",Integer.toString(snapshot.peers));nodeSyncStatus(node);mobileDataSetting(node);node.addView(ui.button("Node settings & diagnostics",false,this::nodeSettings));node.addView(ui.button("Rescan wallet",false,()->new LocalizedText.Dialog(this).setTitle("Rescan wallet?").setMessage("The wallet will scan the chain again to find your outputs. This can take time.").setNegativeButton("Cancel",null).setPositiveButton("Rescan",(d,w)->mutate("Rescan",()->{repo.rescan();return null;})).show()));body.addView(node);
+        ui.section(body,"node");LinearLayout node=ui.card();ui.line(node,"Network",snapshot.network);settingsChainHeight=ui.line(node,"Chain height",Long.toString(snapshot.height));settingsWalletHeight=ui.line(node,"Wallet height",Long.toString(snapshot.walletHeight));settingsPeers=ui.line(node,"Peers",Integer.toString(snapshot.peers));nodeSyncStatus(node);mobileDataSetting(node);node.addView(ui.button("Node settings & diagnostics",false,this::nodeSettings));node.addView(ui.button("Rescan wallet",false,()->new LocalizedText.Dialog(this).setTitle("Rescan wallet?").setMessage("This clears discovered outputs from the safe scan floor and scans the local chain again. A missing network block or locked wallet can delay completion.").setNegativeButton("Cancel",null).setPositiveButton("Rescan",(d,w)->task("Rescan",repo::rescan,result->{
+            refresh(true);
+            Toast.makeText(this,LocalizedText.get(this,"Rescan started at local block "+result.optLong("from_height")+". Watch wallet height as the node scans."),Toast.LENGTH_LONG).show();
+        })).show()));body.addView(node);
         ui.section(body,"transaction alerts");LinearLayout alerts=ui.card();transactionAlertSettings(alerts);body.addView(alerts);
         ui.section(body,"message tools");body.addView(ui.button("Sign a message",false,()->messageTool(true)));body.addView(ui.button("Verify a signature",false,()->messageTool(false)));
         updateSection();ui.section(body,"about");body.addView(ui.text("blocknet / native Android\nBundled Core "+BuildConfig.CORE_VERSION+"\nZero-knowledge money.",13,WalletTheme.MUTED));body.addView(ui.button("Visit blocknetcrypto.com",false,()->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://blocknetcrypto.com/")))));
@@ -835,10 +895,13 @@ public final class MainActivity extends Activity {
         LinearLayout content=dialogBody();content.addView(ui.text("The bundled core runs locally in a foreground service. Chain sync uses network data, storage and battery.",13,WalletTheme.MUTED));content.addView(ui.text("Network: "+repo.network(),14,WalletTheme.LIME));content.addView(ui.text("Free app storage: "+android.text.format.Formatter.formatFileSize(this,getNoBackupFilesDir().getUsableSpace()),12,WalletTheme.MUTED));content.addView(ui.text("First sync may take time. Keep free storage available as the blockchain grows. A 64-bit ARM device running Android 8 or later is required.",12,WalletTheme.MUTED));if(snapshot!=null&&snapshot.nodeMessage!=null&&!snapshot.nodeMessage.equals("Local node running"))content.addView(ui.text(snapshot.nodeMessage,12,WalletTheme.MUTED));
         nodeSyncStatus(content);mobileDataSetting(content);
         if(BuildConfig.CORE_MOBILE_CLIENT){
-            Switch foregroundOnly=new Switch(this);foregroundOnly.setText(LocalizedText.get(this,"Stop node when wallet leaves foreground"));foregroundOnly.setTextColor(WalletTheme.TEXT);foregroundOnly.setChecked(MobileCorePolicy.enabled(this));
+            Switch foregroundOnly=new Switch(this);foregroundOnly.setText(LocalizedText.get(this,"Use scheduled background chain sync"));foregroundOnly.setTextColor(WalletTheme.TEXT);foregroundOnly.setChecked(MobileCorePolicy.enabled(this));
             foregroundOnly.setOnCheckedChangeListener((button,enabled)->mutate("Mobile node policy",()->{MobileCorePolicy.setEnabled(this,enabled);return null;}));
             content.addView(foregroundOnly);
-            content.addView(ui.text("First or restored wallet sync can continue with the screen off until the chain and wallet scan catch up. If Android stops the process, reopen and unlock to resume. After initial sync, leaving the wallet stops Core and background payment alerts. Saved balances remain dated until catch-up. Battery savings have not been measured.",12,WalletTheme.MUTED));
+            content.addView(ui.text("A requested catch-up can continue after screen-off on a permitted connection. Once Core confirms the peer tip, it stops; Android then schedules inexact chain checks at least 15 minutes apart. Background checks do not unlock the wallet. Balances and payment alerts remain dated until you open and unlock it. Android may delay or stop a check; battery savings have not been measured.",12,WalletTheme.MUTED));
+            if (MobileCorePolicy.requested(this) && MobileCorePolicy.enabled(this)
+                && BackgroundChainSync.lastCheckHadNoStatus(this))
+                content.addView(ui.text("The last scheduled chain check could not read Core status. Android will retry; open the wallet to inspect the node log.",12,WalletTheme.ERROR));
         }
         AlertDialog d=dialog("Node settings",content).setNegativeButton("Close",null).create();content.addView(syncRunButton(d::dismiss));
         if(repo.network().equals("mainnet")&&snapshot.syncAllowed&&!snapshot.cached)content.addView(ui.button("Refresh checkpoints",false,()->{d.dismiss();mutate("Refresh checkpoints",repo::refreshCheckpoints);}));

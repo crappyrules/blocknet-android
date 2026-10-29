@@ -1,0 +1,724 @@
+diff --git a/api_handlers.go b/api_handlers.go
+index c10d671..069e7bb 100644
+--- a/api_handlers.go
++++ b/api_handlers.go
+@@ -1959,10 +1959,13 @@ func (s *APIServer) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
+ 	s.daemon.Miner().SetRewardKeys(wl.Keys().SpendPubKey, wl.Keys().ViewPubKey)
+ 
+ 	chainHeight, chainHash, _ := s.daemon.Chain().TipFast()
+-	// A newly generated wallet has no outputs in earlier blocks. Anchor the
+-	// skipped history to its exact canonical tip so readiness also detects a
+-	// same-height reorg before the next block arrives.
+-	wl.SetSyncedTip(chainHeight, chainHash)
++	// Only skip pre-creation history when a recent connected peer comparison
++	// confirms this tip and no catch-up is active. Otherwise the birth height
++	// is unknown and the ordinary scan starts at genesis.
++	if s.daemon.PeerTipConfirmed() && s.daemon.syncMgr != nil && !s.daemon.syncMgr.IsSyncing() {
++		wl.SetBirthHeight(chainHeight)
++		wl.SetSyncedTip(chainHeight, chainHash)
++	}
+ 	if err := wl.Save(); err != nil {
+ 		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+ 		return
+@@ -2304,6 +2307,122 @@ func (s *APIServer) handleWalletSync(w http.ResponseWriter, r *http.Request) {
+ 	})
+ }
+ 
++// handleWalletRescan restarts discovery from a conservative wallet-specific
++// floor. Imported and older wallets have no trusted birth height and start at
++// genesis. The rewind is encrypted and durable before success is returned.
++func (s *APIServer) handleWalletRescan(w http.ResponseWriter, r *http.Request) {
++	if !s.requireWallet(w, r) {
++		return
++	}
++	if s.cli == nil || s.cli.ctx == nil || s.cli.ctx.Err() != nil {
++		writeError(w, http.StatusServiceUnavailable, "wallet scanner is not running")
++		return
++	}
++	if !s.cli.catchUpMu.TryLock() {
++		writeError(w, http.StatusConflict, "wallet scan is already running")
++		return
++	}
++	s.cli.scanMu.Lock()
++	s.walletOpMu.Lock()
++	defer s.walletOpMu.Unlock()
++	s.mu.RLock()
++	selected := s.wallet
++	scanner := s.scanner
++	s.mu.RUnlock()
++	s.cli.mu.RLock()
++	cliWallet := s.cli.wallet
++	s.cli.mu.RUnlock()
++	if selected == nil || scanner == nil || selected != cliWallet || s.cli.ctx.Err() != nil {
++		s.cli.scanMu.Unlock()
++		s.cli.catchUpMu.Unlock()
++		writeError(w, http.StatusConflict, "wallet changed while starting rescan")
++		return
++	}
++	chain := s.daemon.Chain()
++	chainHeight := chain.Height()
++	start := walletRescanStart(selected, chainHeight)
++	var base *Block
++	if start > 0 {
++		base = chain.GetBlockByHeight(start - 1)
++		if base == nil {
++			s.cli.scanMu.Unlock()
++			s.cli.catchUpMu.Unlock()
++			writeError(w, http.StatusServiceUnavailable, "rescan start block is unavailable")
++			return
++		}
++	}
++	checkpoint := selected.CaptureScanCheckpoint()
++	selected.ResetScanFromHeight(start)
++	if base != nil {
++		selected.SetSyncedTip(start-1, base.Hash())
++	}
++	if err := selected.Save(); err != nil {
++		selected.RestoreScanCheckpoint(checkpoint)
++		s.cli.scanMu.Unlock()
++		s.cli.catchUpMu.Unlock()
++		writeInternal(w, r, http.StatusInternalServerError, "could not persist rescan start", err)
++		return
++	}
++	s.rescanMu.Lock()
++	s.rescanWallet, s.rescanStart, s.rescanActive, s.rescanError = selected, start, true, ""
++	s.rescanMu.Unlock()
++	s.cli.scanMu.Unlock()
++	go func() {
++		defer s.cli.catchUpMu.Unlock()
++		err := s.catchUpScanLocked()
++		_, _, ready := walletScanTip(s.daemon.Chain(), selected)
++		s.rescanMu.Lock()
++		if s.rescanWallet == selected {
++			s.rescanActive = false
++			if err != nil {
++				s.rescanError = err.Error()
++			} else if !ready {
++				s.rescanError = "scan paused before the local chain tip"
++			}
++		}
++		s.rescanMu.Unlock()
++	}()
++	writeJSON(w, http.StatusAccepted, map[string]any{"status": "rescanning", "from_height": start, "chain_height": chainHeight})
++}
++
++func walletRescanStart(w *wallet.Wallet, chainHeight uint64) uint64 {
++	if birth, known := w.BirthHeight(); known && birth <= chainHeight && birth > MaxReorgDepth {
++		return birth - MaxReorgDepth
++	}
++	return 0
++}
++
++func (s *APIServer) handleWalletRescanStatus(w http.ResponseWriter, r *http.Request) {
++	if !s.requireWallet(w, r) {
++		return
++	}
++	s.walletOpMu.RLock()
++	defer s.walletOpMu.RUnlock()
++	s.mu.RLock()
++	current, locked := s.wallet, s.locked
++	s.mu.RUnlock()
++	if current == nil || locked {
++		writeError(w, http.StatusForbidden, "wallet is locked or unavailable")
++		return
++	}
++	s.rescanMu.Lock()
++	selected, start, active, failure := s.rescanWallet, s.rescanStart, s.rescanActive, s.rescanError
++	s.rescanMu.Unlock()
++	if selected != current {
++		start, active, failure = 0, false, ""
++	}
++	status := "idle"
++	if active {
++		status = "scanning"
++	} else if failure != "" {
++		status = "incomplete"
++	} else if selected == current {
++		status = "local_scan_complete"
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"status": status, "from_height": start,
++		"synced_height": current.SyncedHeight(), "chain_height": s.daemon.Chain().Height(), "error": failure})
++}
++
+ // handleProve derives the deterministic tx private key to prove a transaction
+ // was sent by this wallet. Works on both full and view-only wallets (uses ViewPrivKey).
+ // POST /api/wallet/prove
+@@ -2895,27 +3014,31 @@ func (s *APIServer) catchUpScan() {
+ 	}
+ 	s.cli.catchUpMu.Lock()
+ 	defer s.cli.catchUpMu.Unlock()
++	_ = s.catchUpScanLocked()
++}
++
++func (s *APIServer) catchUpScanLocked() error {
+ 
+ 	s.mu.RLock()
+ 	w := s.wallet
+ 	sc := s.scanner
+ 	s.mu.RUnlock()
+ 	if w == nil || sc == nil {
+-		return
++		return nil
+ 	}
+ 
+ 	ctx := s.cli.ctx
+ 	s.cli.scanMu.Lock()
+ 	if ctx.Err() != nil {
+ 		s.cli.scanMu.Unlock()
+-		return
++		return ctx.Err()
+ 	}
+ 	s.mu.RLock()
+ 	currentWallet := s.wallet == w && s.scanner == sc
+ 	s.mu.RUnlock()
+ 	if !currentWallet {
+ 		s.cli.scanMu.Unlock()
+-		return
++		return nil
+ 	}
+ 	chain := s.daemon.Chain()
+ 	walletHeight := w.SyncedHeight()
+@@ -2935,10 +3058,12 @@ func (s *APIServer) catchUpScan() {
+ 			if anchoredGenesis {
+ 				if err := w.Save(); err != nil {
+ 					log.Printf("Warning: genesis wallet scan save: %v", err)
++					s.cli.scanMu.Unlock()
++					return err
+ 				}
+ 			}
+ 			s.cli.scanMu.Unlock()
+-			return
++			return nil
+ 		}
+ 		if chainHeight == 0 {
+ 			w.RewindToHeight(0)
+@@ -2950,9 +3075,11 @@ func (s *APIServer) catchUpScan() {
+ 		}
+ 		if err := w.Save(); err != nil {
+ 			log.Printf("Warning: wallet tip repair save: %v", err)
++			s.cli.scanMu.Unlock()
++			return err
+ 		}
+ 		s.cli.scanMu.Unlock()
+-		return
++		return nil
+ 	}
+ 	s.cli.scanMu.Unlock()
+ 
+@@ -2961,7 +3088,7 @@ func (s *APIServer) catchUpScan() {
+ 		select {
+ 		case <-ctx.Done():
+ 			s.cli.scanMu.Unlock()
+-			return
++			return ctx.Err()
+ 		default:
+ 		}
+ 		s.mu.RLock()
+@@ -2969,13 +3096,13 @@ func (s *APIServer) catchUpScan() {
+ 		s.mu.RUnlock()
+ 		if !currentWallet {
+ 			s.cli.scanMu.Unlock()
+-			return
++			return nil
+ 		}
+ 
+ 		block := s.daemon.Chain().GetBlockByHeight(h)
+ 		if block == nil {
+ 			s.cli.scanMu.Unlock()
+-			break
++			return fmt.Errorf("wallet scan block %d is unavailable", h)
+ 		}
+ 		if s.cli.beforeCatchUpBlockApply != nil {
+ 			s.cli.beforeCatchUpBlockApply(block)
+@@ -2988,6 +3115,8 @@ func (s *APIServer) catchUpScan() {
+ 		if h%100 == 0 || h == chainHeight {
+ 			if err := w.Save(); err != nil {
+ 				log.Printf("Warning: catchUpScan save at height %d: %v", h, err)
++				s.cli.scanMu.Unlock()
++				return err
+ 			}
+ 		}
+ 		s.cli.scanMu.Unlock()
+@@ -2997,6 +3126,7 @@ func (s *APIServer) catchUpScan() {
+ 			chainHeight = s.daemon.Chain().Height()
+ 		}
+ 	}
++	return nil
+ }
+ 
+ // ============================================================================
+diff --git a/api_routes.go b/api_routes.go
+index 0933893..4e2c67a 100644
+--- a/api_routes.go
++++ b/api_routes.go
+@@ -44,6 +44,8 @@ func (s *APIServer) registerPrivateRoutes(mux *http.ServeMux) {
+ 	mux.HandleFunc("POST /api/wallet/unlock", s.handleUnlock)
+ 	mux.HandleFunc("POST /api/wallet/seed", s.handleSeed)
+ 	mux.HandleFunc("POST /api/wallet/sync", s.handleWalletSync)
++	mux.HandleFunc("POST /api/wallet/rescan", s.handleWalletRescan)
++	mux.HandleFunc("GET /api/wallet/rescan", s.handleWalletRescanStatus)
+ 	mux.HandleFunc("POST /api/wallet/prove", s.handleProve)
+ 	mux.HandleFunc("POST /api/wallet/audit", s.handleAudit)
+ 	mux.HandleFunc("POST /api/wallet/viewkeys", s.handleViewKeys)
+diff --git a/api_server.go b/api_server.go
+index 1905321..5ec1fb8 100644
+--- a/api_server.go
++++ b/api_server.go
+@@ -44,7 +44,12 @@ type APIServer struct {
+ 	mu              sync.RWMutex
+ 	// A send keeps its wallet instance alive through post-broadcast accounting
+ 	// and persistence. Unload takes the exclusive side before dropping it.
+-	walletOpMu sync.RWMutex
++	walletOpMu   sync.RWMutex
++	rescanMu     sync.Mutex
++	rescanWallet *wallet.Wallet
++	rescanStart  uint64
++	rescanActive bool
++	rescanError  string
+ 
+ 	// Back-reference to CLI for wallet hot-loading in daemon mode
+ 	cli *CLI
+diff --git a/api_wallet_readiness_test.go b/api_wallet_readiness_test.go
+index bcca80b..59acf7b 100644
+--- a/api_wallet_readiness_test.go
++++ b/api_wallet_readiness_test.go
+@@ -115,7 +115,7 @@ func TestWalletReadinessHandlersGateLagAndAllowSynced(t *testing.T) {
+ 	}
+ }
+ 
+-func TestCreateWalletAnchorsExactTipForReadiness(t *testing.T) {
++func TestCreateWalletWithoutConfirmedPeerScansFromGenesis(t *testing.T) {
+ 	chain, _, cleanup := mustCreateTestChain(t)
+ 	defer cleanup()
+ 	mustAddGenesisBlock(t, chain)
+@@ -135,7 +135,10 @@ func TestCreateWalletAnchorsExactTipForReadiness(t *testing.T) {
+ 	if rr.Code != http.StatusOK {
+ 		t.Fatalf("create status %d: %s", rr.Code, rr.Body.String())
+ 	}
+-	if height, hash, ready := walletScanTip(chain, api.wallet); !ready || height != 3 || hash != ([32]byte{0xc3}) {
+-		t.Fatalf("new wallet did not anchor exact tip: height=%d hash=%x ready=%v", height, hash, ready)
++	if height, _, ready := walletScanTip(chain, api.wallet); ready || height != 3 {
++		t.Fatalf("unconfirmed local tip was incorrectly trusted: height=%d ready=%v", height, ready)
++	}
++	if _, known := api.wallet.BirthHeight(); known {
++		t.Fatal("unconfirmed local tip was stored as a birth height")
+ 	}
+ }
+diff --git a/mobile_wallet_rescan_test.go b/mobile_wallet_rescan_test.go
+new file mode 100644
+index 0000000..cc231ca
+--- /dev/null
++++ b/mobile_wallet_rescan_test.go
+@@ -0,0 +1,276 @@
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"blocknet/wallet"
++)
++
++func TestMobileWalletBirthAndRescanFloor(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "disposable.wallet")
++	w, err := wallet.NewWallet(path, []byte("disposable-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got := walletRescanStart(w, 500); got != 0 {
++		t.Fatalf("unknown birth skipped history at %d", got)
++	}
++	mnemonic, err := w.Mnemonic()
++	if err != nil {
++		t.Fatal(err)
++	}
++	recovered, err := wallet.NewWalletFromMnemonic(filepath.Join(t.TempDir(), "recovered.wallet"),
++		[]byte("disposable-password"), mnemonic, defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, known := recovered.BirthHeight(); known {
++		t.Fatal("recovered wallet inherited a birth height")
++	}
++	fromKeys, err := wallet.NewWalletFromStealthKeys(filepath.Join(t.TempDir(), "imported.wallet"),
++		[]byte("disposable-password"), w.Keys(), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, known := fromKeys.BirthHeight(); known {
++		t.Fatal("imported-key wallet inherited a birth height")
++	}
++	w.SetBirthHeight(250)
++	if err := w.Save(); err != nil {
++		t.Fatal(err)
++	}
++	loaded, err := wallet.LoadWallet(path, []byte("disposable-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got := walletRescanStart(loaded, 500); got != 250-MaxReorgDepth {
++		t.Fatalf("unexpected rescan start %d", got)
++	}
++	if got := walletRescanStart(loaded, 200); got != 0 {
++		t.Fatalf("future birth skipped history at %d", got)
++	}
++	if got := walletRescanStart(loaded, 250); got != 250-MaxReorgDepth {
++		t.Fatalf("birth floor mismatch %d", got)
++	}
++	loaded.ResetScanFromHeight(150)
++	if birth, ok := loaded.BirthHeight(); !ok || birth != 250 {
++		t.Fatal("rescan changed the wallet birth height")
++	}
++}
++
++func TestMobileExplicitRescanDoesNotDismissMatchingTip(t *testing.T) {
++	chain, _, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	path := filepath.Join(t.TempDir(), "disposable.wallet")
++	w, err := wallet.NewWallet(path, []byte("disposable-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	genesis := chain.GetBlockByHeight(0)
++	w.AddOutput(&wallet.OwnedOutput{TxID: [32]byte{7}, OutputIndex: 0, Amount: 5, BlockHeight: 0})
++	w.SetSyncedTip(0, genesis.Hash())
++	if err := w.Save(); err != nil {
++		t.Fatal(err)
++	}
++	scanner := wallet.NewScanner(w, defaultScannerConfig())
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	c := &CLI{ctx: ctx, cancel: cancel, daemon: d, wallet: w, scanner: scanner}
++	s := NewAPIServer(d, w, scanner, t.TempDir(), []byte("disposable-password"))
++	s.cli = c
++	c.catchUpMu.Lock()
++	busy := httptest.NewRecorder()
++	s.handleWalletRescan(busy, httptest.NewRequest(http.MethodPost, "/api/wallet/rescan", nil))
++	c.catchUpMu.Unlock()
++	if busy.Code != http.StatusConflict {
++		t.Fatalf("active scan admitted another rescan: %d", busy.Code)
++	}
++	rr := httptest.NewRecorder()
++	s.handleWalletRescan(rr, httptest.NewRequest(http.MethodPost, "/api/wallet/rescan", nil))
++	if rr.Code != http.StatusAccepted {
++		t.Fatalf("rescan status %d: %s", rr.Code, rr.Body.String())
++	}
++	var started struct {
++		Status string `json:"status"`
++		From   uint64 `json:"from_height"`
++	}
++	if err := json.Unmarshal(rr.Body.Bytes(), &started); err != nil {
++		t.Fatal(err)
++	}
++	if started.Status != "rescanning" || started.From != 0 {
++		t.Fatal("rescan did not start at genesis")
++	}
++	deadline := time.Now().Add(5 * time.Second)
++	for {
++		c.catchUpMu.Lock()
++		c.catchUpMu.Unlock()
++		status := httptest.NewRecorder()
++		s.handleWalletRescanStatus(status, httptest.NewRequest(http.MethodGet, "/api/wallet/rescan", nil))
++		if status.Code != http.StatusOK {
++			t.Fatalf("status %d", status.Code)
++		}
++		var state struct {
++			Status string `json:"status"`
++		}
++		if err := json.Unmarshal(status.Body.Bytes(), &state); err != nil {
++			t.Fatal(err)
++		}
++		if state.Status == "local_scan_complete" {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatalf("rescan did not finish: %s", state.Status)
++		}
++		time.Sleep(time.Millisecond)
++	}
++	if outputs := w.AllOutputs(); len(outputs) != 0 {
++		t.Fatal("stale genesis output survived rescan")
++	}
++	loaded, err := wallet.LoadWallet(path, []byte("disposable-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if outputs := loaded.AllOutputs(); len(outputs) != 0 {
++		t.Fatal("rescan did not persist cleared outputs")
++	}
++}
++
++func TestMobileRescanFindsPreviouslySkippedIncomingOutput(t *testing.T) {
++	chain, storage, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	genesis := chain.GetBlockByHeight(0)
++	path := filepath.Join(t.TempDir(), "disposable.wallet")
++	w, err := wallet.NewWallet(path, []byte("disposable-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	keys := w.Keys()
++	reward, err := CreateCoinbase(keys.SpendPubKey, keys.ViewPubKey, GetBlockReward(1), 1)
++	if err != nil {
++		t.Fatal(err)
++	}
++	b1 := &Block{Header: BlockHeader{Version: 1, Height: 1, PrevHash: genesis.Hash(),
++		Timestamp: genesis.Header.Timestamp + BlockIntervalSec, Difficulty: MinDifficulty},
++		Transactions: []*Transaction{reward.Tx}}
++	if err := storage.CommitBlock(&BlockCommit{Block: b1, Height: 1, Hash: b1.Hash(), Work: 2, IsMainTip: true}); err != nil {
++		t.Fatal(err)
++	}
++	chain.mu.Lock()
++	chain.height, chain.bestHash = 1, b1.Hash()
++	chain.publishTipLocked()
++	chain.mu.Unlock()
++	// The old catch-up endpoint would return "already synced" here even
++	// though an owned output in this block had never been discovered.
++	w.SetSyncedTip(1, b1.Hash())
++	if err := w.Save(); err != nil {
++		t.Fatal(err)
++	}
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	scanner := wallet.NewScanner(w, defaultScannerConfig())
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	c := &CLI{ctx: ctx, cancel: cancel, daemon: d, wallet: w, scanner: scanner}
++	s := NewAPIServer(d, w, scanner, t.TempDir(), []byte("disposable-password"))
++	s.cli = c
++	rr := httptest.NewRecorder()
++	s.handleWalletRescan(rr, httptest.NewRequest(http.MethodPost, "/api/wallet/rescan", nil))
++	if rr.Code != http.StatusAccepted {
++		t.Fatalf("rescan status %d: %s", rr.Code, rr.Body.String())
++	}
++	c.catchUpMu.Lock()
++	c.catchUpMu.Unlock()
++	if total, _ := w.OutputCount(); total != 1 {
++		t.Fatalf("rescan found %d owned outputs, want 1", total)
++	}
++	reloaded, err := wallet.LoadWallet(path, []byte("disposable-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if total, _ := reloaded.OutputCount(); total != 1 {
++		t.Fatal("recovered output was not durable")
++	}
++}
++
++func TestMobileRescanSaveFailureRestoresLiveWalletState(t *testing.T) {
++	chain, _, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	path := filepath.Join(t.TempDir(), "disposable.wallet")
++	w, err := wallet.NewWallet(path, []byte("disposable-password"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	genesis := chain.GetBlockByHeight(0)
++	w.AddOutput(&wallet.OwnedOutput{TxID: [32]byte{9}, Amount: 5, BlockHeight: 0, Spent: true, SpentHeight: 1})
++	w.SetSyncedTip(0, genesis.Hash())
++	if err := w.Save(); err != nil {
++		t.Fatal(err)
++	}
++	scanner := wallet.NewScanner(w, defaultScannerConfig())
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	c := &CLI{ctx: ctx, cancel: cancel, daemon: d, wallet: w, scanner: scanner}
++	s := NewAPIServer(d, w, scanner, t.TempDir(), []byte("disposable-password"))
++	s.cli = c
++	if err := os.Rename(path, path+".saved"); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Mkdir(path, 0700); err != nil {
++		t.Fatal(err)
++	}
++	rr := httptest.NewRecorder()
++	s.handleWalletRescan(rr, httptest.NewRequest(http.MethodPost, "/api/wallet/rescan", nil))
++	if rr.Code != http.StatusInternalServerError {
++		t.Fatalf("failed save reported %d", rr.Code)
++	}
++	if w.SyncedHash() != genesis.Hash() || len(w.AllOutputs()) != 1 || !w.AllOutputs()[0].Spent {
++		t.Fatal("failed rescan save changed the live wallet state")
++	}
++}
++
++func TestMobileRescanStatusSurvivesConcurrentUnload(t *testing.T) {
++	chain, _, cleanup := mustCreateTestChain(t)
++	defer cleanup()
++	mustAddGenesisBlock(t, chain)
++	d, stop := mustStartTestDaemon(t, chain)
++	defer stop()
++	w, err := wallet.NewWallet(filepath.Join(t.TempDir(), "disposable.wallet"), []byte("pw"), defaultWalletConfig())
++	if err != nil {
++		t.Fatal(err)
++	}
++	s := NewAPIServer(d, w, nil, t.TempDir(), []byte("pw"))
++	s.walletOpMu.Lock()
++	done := make(chan *httptest.ResponseRecorder, 1)
++	go func() {
++		rr := httptest.NewRecorder()
++		s.handleWalletRescanStatus(rr, httptest.NewRequest(http.MethodGet, "/api/wallet/rescan", nil))
++		done <- rr
++	}()
++	s.mu.Lock()
++	s.wallet = nil
++	s.locked = true
++	s.mu.Unlock()
++	s.walletOpMu.Unlock()
++	select {
++	case rr := <-done:
++		if rr.Code == http.StatusOK {
++			t.Fatal("unloaded wallet was reported as active")
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("rescan status blocked on unload")
++	}
++}
+diff --git a/wallet/rescan_test.go b/wallet/rescan_test.go
+new file mode 100644
+index 0000000..48f6531
+--- /dev/null
++++ b/wallet/rescan_test.go
+@@ -0,0 +1,36 @@
++package wallet
++
++import "testing"
++
++func TestResetScanFromHeightPreservesKeysAndOutgoingHistory(t *testing.T) {
++	birth := uint64(250)
++	keys := StealthKeys{SpendPrivKey: [32]byte{7}, ViewPrivKey: [32]byte{9}}
++	sent := &SendRecord{TxID: [32]byte{8}, Amount: 42}
++	credit := &PendingCredit{}
++	w := &Wallet{data: WalletData{
++		Keys: keys, BirthHeight: &birth,
++		Outputs: []*OwnedOutput{
++			{TxID: [32]byte{1}, BlockHeight: 99, Spent: true, SpentHeight: 150},
++			{TxID: [32]byte{2}, BlockHeight: 100},
++			{TxID: [32]byte{3}, BlockHeight: 200},
++		},
++		SendHistory: []*SendRecord{sent}, PendingCredits: []*PendingCredit{credit},
++		SyncedHeight: 200, SyncedHash: [32]byte{4},
++	}}
++	w.ResetScanFromHeight(100)
++	if len(w.data.Outputs) != 1 || w.data.Outputs[0].BlockHeight != 99 || w.data.Outputs[0].Spent {
++		t.Fatal("reset did not discard affected outputs and unspend older output")
++	}
++	if w.data.SyncedHeight != 99 || w.data.SyncedHash != ([32]byte{}) {
++		t.Fatal("reset did not mark the scan cursor incomplete")
++	}
++	if w.data.Keys != keys || w.data.BirthHeight == nil || *w.data.BirthHeight != birth ||
++		len(w.data.SendHistory) != 1 || w.data.SendHistory[0] != sent ||
++		len(w.data.PendingCredits) != 1 || w.data.PendingCredits[0] != credit {
++		t.Fatal("reset changed keys or non-scan wallet history")
++	}
++	w.ResetScanFromHeight(0)
++	if len(w.data.Outputs) != 0 || w.data.SyncedHeight != 0 {
++		t.Fatal("genesis reset retained scan results")
++	}
++}
+diff --git a/wallet/wallet.go b/wallet/wallet.go
+index 9a76b79..0001928 100644
+--- a/wallet/wallet.go
++++ b/wallet/wallet.go
+@@ -343,7 +343,9 @@ type WalletData struct {
+ 	PendingCredits []*PendingCredit `json:"pending_credits,omitempty"` // UX-only pending credits (e.g. unconfirmed change)
+ 	SyncedHeight   uint64           `json:"synced_height"`
+ 	SyncedHash     [32]byte         `json:"synced_hash"` // Hash of the block at SyncedHeight, used to detect reorgs. Zero for wallets synced before this was tracked.
+-	CreatedAt      int64            `json:"created_at"`
++	// Nil for recovered, imported and older wallets: their history must be scanned from genesis.
++	BirthHeight *uint64 `json:"birth_height,omitempty"`
++	CreatedAt   int64   `json:"created_at"`
+ }
+ 
+ // ViewOnlyKeys contains only the keys needed for a view-only wallet
+@@ -1348,6 +1350,78 @@ func (w *Wallet) SyncedHeight() uint64 {
+ 	return w.data.SyncedHeight
+ }
+ 
++// BirthHeight is set only when a freshly generated wallet was created at a
++// recently confirmed chain tip. A copy is returned so callers cannot mutate it.
++func (w *Wallet) BirthHeight() (uint64, bool) {
++	w.mu.RLock()
++	defer w.mu.RUnlock()
++	if w.data.BirthHeight == nil {
++		return 0, false
++	}
++	return *w.data.BirthHeight, true
++}
++
++func (w *Wallet) SetBirthHeight(height uint64) {
++	w.mu.Lock()
++	defer w.mu.Unlock()
++	h := height
++	w.data.BirthHeight = &h
++}
++
++// ScanCheckpoint is an in-memory rollback point for a failed encrypted rescan
++// save. It is never serialized or exposed through the API.
++type ScanCheckpoint struct {
++	outputs []*OwnedOutput
++	height  uint64
++	hash    [32]byte
++}
++
++func (w *Wallet) CaptureScanCheckpoint() ScanCheckpoint {
++	w.mu.RLock()
++	defer w.mu.RUnlock()
++	state := ScanCheckpoint{height: w.data.SyncedHeight, hash: w.data.SyncedHash,
++		outputs: make([]*OwnedOutput, 0, len(w.data.Outputs))}
++	for _, out := range w.data.Outputs {
++		copy := *out
++		state.outputs = append(state.outputs, &copy)
++	}
++	return state
++}
++
++func (w *Wallet) RestoreScanCheckpoint(state ScanCheckpoint) {
++	w.mu.Lock()
++	defer w.mu.Unlock()
++	w.data.Outputs = state.outputs
++	w.data.SyncedHeight = state.height
++	w.data.SyncedHash = state.hash
++}
++
++// ResetScanFromHeight discards scan results at and above start, including
++// genesis when start is zero. The caller must serialize this with live scans
++// and save the result before reporting that a rescan has begun.
++func (w *Wallet) ResetScanFromHeight(start uint64) {
++	w.mu.Lock()
++	defer w.mu.Unlock()
++	kept := w.data.Outputs[:0]
++	for _, out := range w.data.Outputs {
++		if out.BlockHeight >= start {
++			continue
++		}
++		if out.Spent && out.SpentHeight >= start {
++			out.Spent = false
++			out.SpentHeight = 0
++		}
++		kept = append(kept, out)
++	}
++	w.data.Outputs = kept
++	if start == 0 {
++		w.data.SyncedHeight = 0
++	} else {
++		w.data.SyncedHeight = start - 1
++	}
++	w.data.SyncedHash = [32]byte{}
++}
++
+ // SyncedHash returns the hash of the block at the wallet's synced height, or
+ // the zero hash for wallets synced before reorg-aware tracking existed.
+ func (w *Wallet) SyncedHash() [32]byte {
