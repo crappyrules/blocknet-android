@@ -110,6 +110,7 @@ jobs:
           cp "$RUNNER_TEMP/core-mobile/0009-core-wallet-notification-overflow.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
           cp "$RUNNER_TEMP/core-mobile/0010-bootstrap-progress.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
           cp "$RUNNER_TEMP/core-mobile/0011-fetched-block-wallet-scan.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
+          cp "$RUNNER_TEMP/core-mobile/0012-wallet-birth-rescan.patch" "$GITHUB_WORKSPACE/mobile-artifacts/"
           cp "$RUNNER_TEMP/core-mobile/Cargo.lock" "$GITHUB_WORKSPACE/mobile-artifacts/"
           cp "$RUNNER_TEMP/offline-wallet-view/build-provenance.json" "$GITHUB_WORKSPACE/mobile-artifacts/offline-wallet-view-build-provenance.json"
           cd "$GITHUB_WORKSPACE/mobile-artifacts"

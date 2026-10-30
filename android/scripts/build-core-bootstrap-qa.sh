@@ -22,12 +22,13 @@ names=[f'{i:04d}-{suffix}.patch' for i,suffix in enumerate((
     'mobile-client-policy','core-wallet-persistence','core-wallet-scan-serialization',
     'core-wallet-send-readiness','core-wallet-send-reorg-activity',
     'core-wallet-notification-overflow','bootstrap-progress',
-    'fetched-block-wallet-scan'),1)]
+    'fetched-block-wallet-scan','wallet-birth-rescan'),1)]
 fields=['patch_sha256','android_link_shim_sha256','announcement_scan_patch_sha256',
     'mobile_client_patch_sha256','wallet_persistence_patch_sha256',
     'wallet_scan_patch_sha256','wallet_send_readiness_patch_sha256',
     'wallet_followup_patch_sha256','wallet_notification_overflow_patch_sha256',
-    'bootstrap_progress_patch_sha256','fetched_block_wallet_scan_patch_sha256']
+    'bootstrap_progress_patch_sha256','fetched_block_wallet_scan_patch_sha256',
+    'wallet_birth_rescan_patch_sha256']
 digest=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
 assert record.get('experimental') is True and record.get('qa_only') is not True
 assert record.get('baseline_commit')=='5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e'
@@ -58,7 +59,8 @@ for name in Cargo.lock applied.patch android-cgo-link-flags.patch onchain-announ
     mobile-client-policy.patch 0005-core-wallet-persistence.patch \
     0006-core-wallet-scan-serialization.patch 0007-core-wallet-send-readiness.patch \
     0008-core-wallet-send-reorg-activity.patch 0009-core-wallet-notification-overflow.patch \
-    0010-bootstrap-progress.patch 0011-fetched-block-wallet-scan.patch; do
+    0010-bootstrap-progress.patch 0011-fetched-block-wallet-scan.patch \
+    0012-wallet-birth-rescan.patch; do
     cp -- "$base/$name" "$out/$name"
 done
 cp -- "$base/build-provenance.json" "$out/reviewed-build-provenance.json"

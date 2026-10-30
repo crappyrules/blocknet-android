@@ -19,6 +19,7 @@ PATCHES = (
     ('0009-core-wallet-notification-overflow.patch', 'wallet_notification_overflow_patch_sha256'),
     ('0010-bootstrap-progress.patch', 'bootstrap_progress_patch_sha256'),
     ('0011-fetched-block-wallet-scan.patch', 'fetched_block_wallet_scan_patch_sha256'),
+    ('0012-wallet-birth-rescan.patch', 'wallet_birth_rescan_patch_sha256'),
 )
 BASELINE = '5a37ed52f0426951eaac2f0ae86bf0bb6d70a83e'
 
@@ -32,11 +33,7 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def verify(directory):
-    apk = directory / 'blocknet-wallet-arm64-activity-release.apk'
-    core_bytes = (directory / 'core-mobile-build-provenance.json').read_bytes()
-    view_bytes = (directory / 'offline-wallet-view-build-provenance.json').read_bytes()
-    core, view = json.loads(core_bytes), json.loads(view_bytes)
+def verify_core_provenance(core):
     require(core.get('baseline_commit') == BASELINE and core.get('mobile_client_capability') == 1,
             'Release Core is not the pinned mobile build')
     require(core.get('patch_order') == [name for name, _ in PATCHES],
@@ -48,6 +45,14 @@ def verify(directory):
                 f'Release Core patch differs: {name}')
     require(core.get('cargo_lock_sha256') == digest((ROOT / 'core-patches/core-activity.Cargo.lock').read_bytes()),
             'Release Cargo lock differs from reviewed source')
+
+
+def verify(directory):
+    apk = directory / 'blocknet-wallet-arm64-activity-release.apk'
+    core_bytes = (directory / 'core-mobile-build-provenance.json').read_bytes()
+    view_bytes = (directory / 'offline-wallet-view-build-provenance.json').read_bytes()
+    core, view = json.loads(core_bytes), json.loads(view_bytes)
+    verify_core_provenance(core)
     require(view.get('baseline_commit') == BASELINE and
             view.get('helper_source_sha256') == digest((ROOT / 'offline-wallet-view/main.go').read_bytes()) and
             view.get('helper_test_sha256') == digest((ROOT / 'offline-wallet-view/main_test.go').read_bytes()),
