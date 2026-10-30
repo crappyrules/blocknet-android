@@ -1,34 +1,42 @@
-# Blocknet Android v1.0.0-preview.7 test candidate
+# Blocknet Android v1.0.0-preview.9
 
-This is an owner-signed phone-acceptance candidate, not a public release. Its
-workflow uploads a private Actions artifact for review and blocks publication
-of preview.7. On a disposable two-block testnet fixture, the wallet's chain
-and scan heights advanced together from 0 to 2 with the screen off. Core then
-saved the wallet, recorded a matching shutdown proof and completion marker,
-and stayed stopped. Manual Stop sync and the Wi-Fi-only setting still take
-precedence. A full mainnet sync, process death, unavailable peers, and battery
-use have not been measured on this candidate.
+This owner-signed preview improves unattended synchronization and wallet rescans.
+When background sync is enabled, Android schedules chain catch-up on permitted
+Wi-Fi; the existing Allow mobile data choice also permits cellular catch-up.
+Android controls the timing of background jobs, so the 15-minute minimum
+interval is not a promise that the wallet will be current every 15 minutes.
+Manual Stop sync remains effective. A locked wallet is not automatically
+unlocked by a background job.
 
-Settings chain height, wallet height, and peer counts now update during polling
-without replacing the current Settings viewport. Passive redraws wait for a
-touch or focused edit to finish; lock and saved-view transitions still redact
-live wallet content. Offline balances and activity remain explicitly dated;
-they cannot be used to send or broadcast. This candidate also reduces repeated
-cache writes and avoids history polling when transaction alerts are disabled.
+Rescan now rewinds the wallet scan cursor so previously missed outputs can be
+found. A newly created wallet records a conservative starting height when the
+chain tip is known; imported, restored, and older wallets scan from genesis
+when their history is unknown. Rescan and initial scan progress remain tied to
+the wallet and its normal lock rules. The wallet shows chain and wallet scan
+progress separately. Do not treat a cached balance as current or spendable
+until catch-up and wallet scanning complete.
 
-The candidate retains the encrypted local address book, language selection,
-mobile Core client policy, and Dandelion++ transaction forwarding. The mobile
-Core does not listen for incoming peers or serve chain data or peer lists.
-Restored-wallet upgrade, battery use, announcement delivery, and a funded send
-remain to be checked. The controlled screen-off test used an empty wallet; it
-did not broadcast a transaction.
+The balance can be tapped to switch between BNT and an approximate USDT value
+based on SafeTrade's public BNT/USDT quote. This is an indicative estimate,
+not an exchange offer. The quote may be stale or unavailable and is requested
+only while the wallet is visible and unlocked. The app does not send wallet
+addresses or balances to SafeTrade.
 
-This candidate keeps the owner signing certificate and advances Android
-versionCode to 7. It can update owner-signed preview.2 through preview.6
-in place while retaining app data. The address book is encrypted
-with a separate device-bound Android Keystore key; it is not a transferable
-backup. Record important recipient addresses separately before replacing or
-clearing a device. A fluent review of the Chinese wording remains open.
+Disposable testnet acceptance recovered a deliberately missed older output
+through a real rescan, observed chain and wallet progress during a 16-minute
+screen-off session, and observed one natural post-reboot chain-only job reach
+the test tip. These tests used a small synthetic chain and no real funds.
+Large mainnet backlogs, funded sends, restored-wallet upgrades, live price
+display with a loaded mainnet wallet, battery use, and timing across different
+Android devices remain unverified. Users should confirm both sync heights and
+their expected activity before relying on the displayed balance.
+
+This APK keeps the owner signing certificate, package `com.blocknet.wallet`,
+and advances Android versionCode to 9. It can update owner-signed preview.2
+through preview.7 in place while retaining app data. The encrypted local
+address book uses a device-bound Android Keystore key and is not a transferable
+backup. Keep independent wallet recovery material and copies of important
+recipient addresses before replacing or clearing a device.
 
 ## Older debug-signed previews
 
@@ -54,4 +62,4 @@ access to the coins.
 The expected APK signing-certificate SHA-256 is
 `4a307e802e3504f7850c546ab8b38c292211ea5d5c5be3342107edaec1255fff`.
 Check the package, version, certificate, and APK checksum before installation.
-Signing this test APK does not broadcast an on-chain update announcement.
+Publishing this APK does not broadcast an on-chain update announcement.
